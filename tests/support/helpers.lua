@@ -186,7 +186,7 @@ function M.nvim_wait_for_delta_file_state(nvim, predicate, timeout, interval)
     end
 
     local ok = nvim.lua_func(function(t, i, pred_src)
-        local toggle = require("delta").spotlight.toggle_stage_hunk
+        local toggle = require("delta.spotlight.core").toggle_stage_hunk
         local file_for_buf
 
         for idx = 1, 20 do

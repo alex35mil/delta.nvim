@@ -992,8 +992,9 @@ local function resolve_current_hunk_opts(opts)
         return nil, "No file path for current buffer"
     end
 
+    local Spotlight = require("delta.spotlight.core")
+
     local cursor = vim.api.nvim_win_get_cursor(winid)
-    local Spotlight = require("delta.spotlight")
     local default_hunks, default_side = Spotlight.hunks_for_buf(bufid)
     local side = opts and opts.side or default_side or Paths.visible_side(bufname)
     local hunks = opts and opts.hunks or default_hunks

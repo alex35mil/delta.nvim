@@ -19,8 +19,8 @@ T["resets current file to HEAD from staged state"] = function()
     H.nvim_edit(nvim, repo .. "/file.txt")
     H.nvim_wait_for_delta_file_state(nvim)
 
-    nvim.lua_notify([[require('delta').spotlight.cycle_mode()]])
-    nvim.lua_notify([[require('delta').spotlight.reset_file()]])
+    nvim.lua_notify([[require('delta.spotlight.core').cycle_mode()]])
+    nvim.lua_notify([[require('delta.spotlight.core').reset_file()]])
 
     H.nvim_wait_for_git_diff(nvim, "file.txt", true, false, 5000, 20)
     H.nvim_wait_for_git_diff(nvim, "file.txt", false, false, 5000, 20)

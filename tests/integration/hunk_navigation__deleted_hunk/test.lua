@@ -18,7 +18,7 @@ T["next_hunk lands on deleted hunk anchor line"] = function()
     H.nvim_wait_for_delta_file_state(nvim)
 
     nvim.api.nvim_win_set_cursor(0, { 1, 0 })
-    nvim.lua_notify([[require('delta').spotlight.next_hunk(vim.api.nvim_get_current_buf())]])
+    nvim.lua_notify([[require('delta.spotlight.core').next_hunk(vim.api.nvim_get_current_buf())]])
 
     local line = nvim.lua_func(function()
         return vim.api.nvim_win_get_cursor(0)[1]
@@ -43,7 +43,7 @@ T["prev_hunk lands on deleted hunk anchor line"] = function()
     H.nvim_wait_for_delta_file_state(nvim)
 
     nvim.api.nvim_win_set_cursor(0, { 10, 0 })
-    nvim.lua_notify([[require('delta').spotlight.prev_hunk(vim.api.nvim_get_current_buf())]])
+    nvim.lua_notify([[require('delta.spotlight.core').prev_hunk(vim.api.nvim_get_current_buf())]])
 
     local line = nvim.lua_func(function()
         return vim.api.nvim_win_get_cursor(0)[1]

@@ -10,7 +10,7 @@ local Layout = require("delta.picker.layout")
 local Notify = require("delta.notify")
 local Preview = require("delta.picker.preview")
 local Tree = require("delta.picker.tree")
-local Spotlight = require("delta.spotlight")
+local Spotlight = require("delta.spotlight.core")
 local Paths = require("delta.spotlight.paths")
 
 local hl = Highlights.groups
@@ -1071,7 +1071,7 @@ local function make_context()
 
             do_toggle()
         end,
-        reset_file = function(cb)
+        reset = function(cb)
             if not state or not node then
                 return false
             end
@@ -1291,15 +1291,6 @@ local function create_float()
             end
         end
     end
-
-    -- Arrow key aliases for cursor movement (always bound).
-    local Actions = require("delta.picker.actions")
-    vim.keymap.set(default_modes, "<Up>", function()
-        execute_action(Actions.move(-1))
-    end, map_opts)
-    vim.keymap.set(default_modes, "<Down>", function()
-        execute_action(Actions.move(1))
-    end, map_opts)
 
     -- Re-render on input change.
     vim.api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {

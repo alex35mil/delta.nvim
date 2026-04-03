@@ -21,7 +21,7 @@ function M.setup()
     end, {
         nargs = "?",
         complete = function()
-            return { "auto", "unstaged", "staged", "all" }
+            return { "auto", "unstaged", "staged" }
         end,
         desc = "Toggle delta spotlight on the current buffer",
     })

@@ -29,7 +29,7 @@ end
 ---@field next_hunk fun() Jump to next hunk
 ---@field prev_hunk fun() Jump to previous hunk
 ---@field cycle_mode fun() Cycle diff mode
----@field toggle_stage fun(cb?: fun()) Toggle staged/unstaged for current file
+---@field toggle_stage_file fun(cb?: fun()) Toggle staged/unstaged for current file
 ---@field reset_file fun(cb?: fun()) Reset current file to the active baseline
 ---@field toggle_stage_hunk fun(cb?: fun()) Stage/unstage hunk under cursor (or visual selection)
 ---@field reset_hunk fun(cb?: fun()) Reset unstaged hunk under cursor (or visual selection)

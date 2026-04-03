@@ -18,7 +18,7 @@ T["resets selected top slice from modified+add hunk"] = function()
     H.nvim_wait_for_delta_file_state(nvim)
 
     nvim.lua_func(function()
-        local spotlight = require("delta").spotlight
+        local spotlight = require("delta.spotlight.core")
         local actions = spotlight.actions
 
         vim.api.nvim_win_set_cursor(0, { 3, 0 })

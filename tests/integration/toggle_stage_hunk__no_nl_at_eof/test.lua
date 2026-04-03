@@ -18,7 +18,7 @@ T["stages hunk with no newline at EOF"] = function()
     H.nvim_wait_for_delta_file_state(nvim)
 
     nvim.api.nvim_win_set_cursor(0, { 1, 0 })
-    nvim.lua_notify([[require('delta').spotlight.toggle_stage_hunk()]])
+    nvim.lua_notify([[require('delta.spotlight.core').toggle_stage_hunk()]])
 
     H.nvim_wait_for_git_diff(nvim, "test.txt", true, true, 5000, 20)
     H.nvim_wait_for_git_diff(nvim, "test.txt", false, false, 5000, 20)

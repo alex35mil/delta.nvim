@@ -19,7 +19,7 @@ T["resets unstaged hunk under cursor"] = function()
     H.nvim_wait_for_delta_file_state(nvim)
 
     nvim.api.nvim_win_set_cursor(0, { 2, 0 })
-    nvim.lua_notify([[require('delta').spotlight.reset_hunk()]])
+    nvim.lua_notify([[require('delta.spotlight.core').reset_hunk()]])
 
     H.nvim_wait_for_git_diff(nvim, "file.txt", false, false, 5000, 20)
     H.eq(table.concat(vim.fn.readfile(repo .. "/file.txt"), "\n"), "one\ntwo\nthree")

@@ -52,16 +52,16 @@ end
 
 --- Toggle staged/unstaged for the current file.
 ---@param ctx delta.spotlight.ActionContext
-function M.toggle_stage(ctx)
-    ctx.toggle_stage()
+function M.toggle_stage_file(ctx)
+    ctx.toggle_stage_file()
 end
 
 --- Toggle staged/unstaged for the current file, then run cb on success.
 ---@param cb fun()
 ---@return delta.spotlight.ActionHandler
-function M.toggle_stage_and(cb)
+function M.toggle_stage_file_and(cb)
     return function(ctx)
-        ctx.toggle_stage(cb)
+        ctx.toggle_stage_file(cb)
     end
 end
 

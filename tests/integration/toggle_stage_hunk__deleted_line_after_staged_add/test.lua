@@ -20,7 +20,7 @@ T["stages deletion of worktree-removed staged line"] = function()
 
     -- Stage the added -- bar line
     nvim.api.nvim_win_set_cursor(0, { 7, 0 })
-    nvim.lua_notify([[require('delta').spotlight.toggle_stage_hunk()]])
+    nvim.lua_notify([[require('delta.spotlight.core').toggle_stage_hunk()]])
 
     H.nvim_wait_for_git_diff(nvim, "test.txt", true, true, 5000, 20)
     H.nvim_wait_for_git_diff(nvim, "test.txt", false, false, 5000, 20)
@@ -34,7 +34,7 @@ T["stages deletion of worktree-removed staged line"] = function()
 
     -- Stage the deletion
     nvim.api.nvim_win_set_cursor(0, { 7, 0 })
-    nvim.lua_notify([[require('delta').spotlight.toggle_stage_hunk()]])
+    nvim.lua_notify([[require('delta.spotlight.core').toggle_stage_hunk()]])
 
     H.nvim_wait_for_git_diff(nvim, "test.txt", true, false, 5000, 20)
     H.nvim_wait_for_git_diff(nvim, "test.txt", false, false, 5000, 20)

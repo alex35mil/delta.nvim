@@ -18,14 +18,14 @@ T["next_hunk stops on delete anchor then added hunk"] = function()
     H.nvim_wait_for_delta_file_state(nvim)
 
     nvim.api.nvim_win_set_cursor(0, { 1, 0 })
-    nvim.lua_notify([[require('delta').spotlight.next_hunk(vim.api.nvim_get_current_buf())]])
+    nvim.lua_notify([[require('delta.spotlight.core').next_hunk(vim.api.nvim_get_current_buf())]])
 
     local first = nvim.lua_func(function()
         return vim.api.nvim_win_get_cursor(0)[1]
     end)
     H.eq(first, 2)
 
-    nvim.lua_notify([[require('delta').spotlight.next_hunk(vim.api.nvim_get_current_buf())]])
+    nvim.lua_notify([[require('delta.spotlight.core').next_hunk(vim.api.nvim_get_current_buf())]])
 
     local second = nvim.lua_func(function()
         return vim.api.nvim_win_get_cursor(0)[1]
@@ -49,14 +49,14 @@ T["prev_hunk stops on added hunk then delete anchor"] = function()
     H.nvim_wait_for_delta_file_state(nvim)
 
     nvim.api.nvim_win_set_cursor(0, { 9, 0 })
-    nvim.lua_notify([[require('delta').spotlight.prev_hunk(vim.api.nvim_get_current_buf())]])
+    nvim.lua_notify([[require('delta.spotlight.core').prev_hunk(vim.api.nvim_get_current_buf())]])
 
     local first = nvim.lua_func(function()
         return vim.api.nvim_win_get_cursor(0)[1]
     end)
     H.eq(first, 5)
 
-    nvim.lua_notify([[require('delta').spotlight.prev_hunk(vim.api.nvim_get_current_buf())]])
+    nvim.lua_notify([[require('delta.spotlight.core').prev_hunk(vim.api.nvim_get_current_buf())]])
 
     local second = nvim.lua_func(function()
         return vim.api.nvim_win_get_cursor(0)[1]

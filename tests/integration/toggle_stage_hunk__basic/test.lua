@@ -19,7 +19,7 @@ T["stages hunk under cursor"] = function()
     H.nvim_wait_for_delta_file_state(nvim)
 
     nvim.api.nvim_win_set_cursor(0, { 2, 0 })
-    nvim.lua_notify([[require('delta').spotlight.toggle_stage_hunk()]])
+    nvim.lua_notify([[require('delta.spotlight.core').toggle_stage_hunk()]])
 
     H.nvim_wait_for_git_diff(nvim, "file.txt", true, true, 5000, 20)
 

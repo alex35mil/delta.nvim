@@ -23,7 +23,7 @@ T["does nothing for staged-only hunk"] = function()
     local before_worktree = H.normalize_diff(H.git(repo, "diff", "--", "file.txt"))
 
     nvim.api.nvim_win_set_cursor(0, { 2, 0 })
-    nvim.lua_notify([[require('delta').spotlight.reset_hunk()]])
+    nvim.lua_notify([[require('delta.spotlight.core').reset_hunk()]])
 
     H.nvim_wait_for_delta_file_state(nvim)
 

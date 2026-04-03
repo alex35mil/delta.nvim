@@ -86,20 +86,21 @@ function M.toggle_stage_and(cb)
     end
 end
 
---- Reset current file/directory to its section baseline.
+--- Reset current entry to its section baseline.
 ---@param ctx delta.picker.ActionContext
-function M.reset_file(ctx)
-    ctx.reset_file()
+function M.reset(ctx)
+    ctx.reset()
 end
 
---- Reset current file/directory to its section baseline, then run cb on success.
+--- Reset current entry to its section baseline, then run cb on success.
 ---@param cb fun()
 ---@return delta.picker.ActionHandler
-function M.reset_file_and(cb)
+function M.reset_and(cb)
     return function(ctx)
-        ctx.reset_file(cb)
+        ctx.reset(cb)
     end
 end
+
 
 --- Cycle to the next source.
 ---@param ctx delta.picker.ActionContext

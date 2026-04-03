@@ -18,7 +18,7 @@ T["clamps visual selection to modified hunk bounds"] = function()
     H.nvim_wait_for_delta_file_state(nvim)
 
     nvim.lua_func(function()
-        local spotlight = require("delta").spotlight
+        local spotlight = require("delta.spotlight.core")
         local actions = spotlight.actions
         local setup_global_keymaps = _G.find_upvalue(spotlight.setup, "setup_global_keymaps")
         assert(type(setup_global_keymaps) == "function", "failed to resolve setup_global_keymaps")

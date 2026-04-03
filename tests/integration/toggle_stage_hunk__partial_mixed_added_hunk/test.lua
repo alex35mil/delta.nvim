@@ -18,8 +18,8 @@ T["stages selected lines from mixed staged and unstaged added hunk"] = function(
     H.nvim_wait_for_delta_file_state(nvim)
 
     nvim.lua_func(function()
-        local spotlight = require("delta").spotlight
-        local actions = spotlight.actions
+        local spotlight = require("delta.spotlight.core")
+        local actions = require("delta").spotlight.actions
         local setup_global_keymaps = _G.find_upvalue(spotlight.setup, "setup_global_keymaps")
         local make_context = _G.find_upvalue(setup_global_keymaps, "make_context")
 
@@ -38,8 +38,8 @@ T["stages selected lines from mixed staged and unstaged added hunk"] = function(
     H.nvim_wait_for_delta_file_state(nvim)
 
     nvim.lua_func(function()
-        local spotlight = require("delta").spotlight
-        local actions = spotlight.actions
+        local spotlight = require("delta.spotlight.core")
+        local actions = require("delta").spotlight.actions
         local setup_global_keymaps = _G.find_upvalue(spotlight.setup, "setup_global_keymaps")
         local make_context = _G.find_upvalue(setup_global_keymaps, "make_context")
 

@@ -18,7 +18,7 @@ T["resets current file to index"] = function()
     H.nvim_edit(nvim, repo .. "/file.txt")
     H.nvim_wait_for_delta_file_state(nvim)
 
-    nvim.lua_notify([[require('delta').spotlight.reset_file()]])
+    nvim.lua_notify([[require('delta.spotlight.core').reset_file()]])
 
     H.nvim_wait_for_git_diff(nvim, "file.txt", false, false, 5000, 20)
     H.eq(H.git(repo, "diff", "--cached", "--", "file.txt"), "")
