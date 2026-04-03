@@ -71,13 +71,13 @@ function M.spotlight(ctx)
     ctx.open({ cmd = "edit", spotlight = true })
 end
 
---- Toggle staged/unstaged for current file (no-op on directories).
+--- Toggle staged/unstaged for the current entry.
 ---@param ctx delta.picker.ActionContext
 function M.toggle_stage(ctx)
     ctx.toggle_stage()
 end
 
---- Toggle staged/unstaged for current file, then run cb on success.
+--- Toggle staged/unstaged for the current entry, then run cb on success.
 ---@param cb fun()
 ---@return delta.picker.ActionHandler
 function M.toggle_stage_and(cb)

@@ -44,7 +44,7 @@ function M.prev_hunk(ctx)
     ctx.prev_hunk()
 end
 
---- Cycle between unstaged/staged/all modes.
+--- Cycle between auto/unstaged/staged modes.
 ---@param ctx delta.spotlight.ActionContext
 function M.cycle_mode(ctx)
     ctx.cycle_mode()
