@@ -1,0 +1,10 @@
+diff --git a/test.txt b/test.txt
+--- a/test.txt
++++ b/test.txt
+@@ -1,5 +1,6 @@
+ local M = {}
+ 
++-- foo
+ function M.a()
+     return 1
+ end

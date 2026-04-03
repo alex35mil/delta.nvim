@@ -1,0 +1,15 @@
+local M = {}
+
+-- foo
+function M.a()
+    return 1
+end
+
+-- 1
+-- 2
+-- 3
+function M.b()
+    return 2
+end
+
+return M

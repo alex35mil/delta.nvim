@@ -1,0 +1,15 @@
+diff --git a/test.txt b/test.txt
+--- a/test.txt
++++ b/test.txt
+@@ -1,9 +1,11 @@
+ local M = {}
+ 
++-- foo
+ function M.a()
+     return 1
+ end
+ 
++-- bar
+ function M.b()
+     return 2
+ end

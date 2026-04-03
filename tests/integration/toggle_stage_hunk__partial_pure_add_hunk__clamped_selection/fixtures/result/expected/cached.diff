@@ -1,0 +1,12 @@
+diff --git a/test.txt b/test.txt
+--- a/test.txt
++++ b/test.txt
+@@ -3,6 +3,8 @@ B
+ C
+ D
+ E
++X1
++X2
+ F
+ G
+ H
