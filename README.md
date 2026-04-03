@@ -659,5 +659,7 @@ All highlight groups are defined with `default = true`, so they can be overridde
 | `DeltaSpotlightPopupTitle` | `Title` |
 | `DeltaSpotlightPopupAdded` | background from `DiffAdd` when available, else `DiffAdd` |
 | `DeltaSpotlightPopupRemoved` | background from `DiffDelete` when available, else `DiffDelete` |
+| `DeltaSpotlightPopupAddedText` | `DiffText` |
+| `DeltaSpotlightPopupRemovedText` | `DiffText` |
 | `DeltaSpotlightPopupNeutral` | `DeltaSpotlightPopup` |
 | `DeltaSpotlightPopupLineNr` | `Comment` |

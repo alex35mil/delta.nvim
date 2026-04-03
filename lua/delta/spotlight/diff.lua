@@ -27,11 +27,17 @@ local ns = vim.api.nvim_create_namespace("delta.spotlight.diff")
 ---@field min_side_by_side_width integer
 ---@field scroll_step integer
 
+---@class delta.spotlight.diff.IntralineRange
+---@field start_col integer
+---@field end_col integer
+---@field hl_group string
+
 ---@class delta.spotlight.diff.SideContent
 ---@field width integer
 ---@field lines string[]
 ---@field prefixes string[]
 ---@field line_hls string[]
+---@field intraline_hls (delta.spotlight.diff.IntralineRange[]?)[]
 
 ---@class delta.spotlight.diff.Content
 ---@field title string
@@ -42,6 +48,7 @@ local ns = vim.api.nvim_create_namespace("delta.spotlight.diff")
 ---@field lines string[]
 ---@field prefixes string[]
 ---@field line_hls string[]
+---@field intraline_hls (delta.spotlight.diff.IntralineRange[]?)[]
 ---@field left? delta.spotlight.diff.SideContent
 ---@field right? delta.spotlight.diff.SideContent
 
@@ -108,6 +115,8 @@ local hl_groups = {
     title = Highlights.groups.popup_title,
     added = Highlights.groups.popup_added,
     removed = Highlights.groups.popup_removed,
+    added_text = Highlights.groups.popup_added_text,
+    removed_text = Highlights.groups.popup_removed_text,
     neutral = Highlights.groups.popup_neutral,
     line_nr = Highlights.groups.popup_line_nr,
 }
@@ -207,12 +216,230 @@ local function resolve_display_starts(hunk, visible_side)
     return removed_start, added_start
 end
 
+---@param text string
+---@return integer
+local function char_count(text)
+    return vim.fn.strchars(text)
+end
+
+---@param text string
+---@param char_idx integer
+---@return string
+local function char_at(text, char_idx)
+    return vim.fn.strcharpart(text, char_idx, 1)
+end
+
+---@param text string
+---@param char_idx integer
+---@return integer
+local function byte_col(text, char_idx)
+    return vim.str_byteindex(text, char_idx)
+end
+
+---@param left string
+---@param right string
+---@return integer
+local function common_prefix_len(left, right)
+    local left_chars = char_count(left)
+    local right_chars = char_count(right)
+    local prefix = 0
+    local shared = math.min(left_chars, right_chars)
+
+    while prefix < shared and char_at(left, prefix) == char_at(right, prefix) do
+        prefix = prefix + 1
+    end
+
+    return prefix
+end
+
+---@param left string
+---@param right string
+---@param prefix integer
+---@return integer
+local function common_suffix_len(left, right, prefix)
+    local left_chars = char_count(left)
+    local right_chars = char_count(right)
+    local left_suffix = left_chars
+    local right_suffix = right_chars
+
+    while left_suffix > prefix and right_suffix > prefix do
+        if char_at(left, left_suffix - 1) ~= char_at(right, right_suffix - 1) then
+            break
+        end
+        left_suffix = left_suffix - 1
+        right_suffix = right_suffix - 1
+    end
+
+    return left_chars - left_suffix
+end
+
+---@param left string
+---@param right string
+---@return integer
+local function longest_common_substring_len(left, right)
+    local left_chars = char_count(left)
+    local right_chars = char_count(right)
+    if left_chars == 0 or right_chars == 0 then
+        return 0
+    end
+
+    local prev, best = {}, 0
+    for i = 1, left_chars do
+        local cur = {}
+        local left_char = char_at(left, i - 1)
+        for j = 1, right_chars do
+            if left_char == char_at(right, j - 1) then
+                cur[j] = (prev[j - 1] or 0) + 1
+                best = math.max(best, cur[j])
+            else
+                cur[j] = 0
+            end
+        end
+        prev = cur
+    end
+
+    return best
+end
+
+---@param removed_line string
+---@param added_line string
+---@return number
+local function line_similarity(removed_line, added_line)
+    if removed_line == added_line then
+        return 1e6
+    end
+
+    local prefix = common_prefix_len(removed_line, added_line)
+    local suffix = common_suffix_len(removed_line, added_line, prefix)
+    local substring = longest_common_substring_len(removed_line, added_line)
+    local removed_chars = char_count(removed_line)
+    local added_chars = char_count(added_line)
+    local removed_trim = vim.trim(removed_line)
+    local added_trim = vim.trim(added_line)
+    local contains_bonus = 0
+
+    if removed_trim ~= "" and added_trim ~= "" then
+        if added_trim:find(removed_trim, 1, true) or removed_trim:find(added_trim, 1, true) then
+            contains_bonus = math.min(char_count(removed_trim), char_count(added_trim)) * 4
+        end
+    end
+
+    return prefix * 3 + suffix * 3 + substring * 2 + contains_bonus - math.floor(math.abs(removed_chars - added_chars) / 2)
+end
+
+---@param removed_lines string[]
+---@param added_lines string[]
+---@return { removed_idx: integer, added_idx: integer }[]
+local function match_changed_lines(removed_lines, added_lines)
+    local m = #removed_lines
+    local n = #added_lines
+    if m == 0 or n == 0 then
+        return {}
+    end
+
+    local scores = {}
+    for i = 1, m do
+        scores[i] = {}
+        for j = 1, n do
+            scores[i][j] = line_similarity(removed_lines[i], added_lines[j])
+        end
+    end
+
+    local dp, choice = {}, {}
+    for i = 0, m do
+        dp[i] = {}
+        choice[i] = {}
+        for j = 0, n do
+            dp[i][j] = 0
+        end
+    end
+
+    for i = 1, m do
+        for j = 1, n do
+            local best = dp[i - 1][j]
+            local best_choice = "up"
+            if dp[i][j - 1] > best then
+                best = dp[i][j - 1]
+                best_choice = "left"
+            end
+            local pair_score = scores[i][j]
+            if pair_score > 0 and dp[i - 1][j - 1] + pair_score > best then
+                best = dp[i - 1][j - 1] + pair_score
+                best_choice = "diag"
+            end
+            dp[i][j] = best
+            choice[i][j] = best_choice
+        end
+    end
+
+    local pairs = {}
+    local i, j = m, n
+    while i > 0 and j > 0 do
+        local step = choice[i][j]
+        if step == "diag" then
+            pairs[#pairs + 1] = { removed_idx = i, added_idx = j }
+            i = i - 1
+            j = j - 1
+        elseif step == "left" then
+            j = j - 1
+        else
+            i = i - 1
+        end
+    end
+
+    table.sort(pairs, function(a, b)
+        return a.removed_idx < b.removed_idx
+    end)
+    return pairs
+end
+
+---@param removed_line string
+---@param added_line string
+---@return delta.spotlight.diff.IntralineRange[]?, delta.spotlight.diff.IntralineRange[]?
+local function intraline_ranges(removed_line, added_line)
+    if removed_line == added_line then
+        return nil, nil
+    end
+
+    local removed_chars = char_count(removed_line)
+    local added_chars = char_count(added_line)
+    local prefix = common_prefix_len(removed_line, added_line)
+    local suffix = common_suffix_len(removed_line, added_line, prefix)
+    local removed_suffix = removed_chars - suffix
+    local added_suffix = added_chars - suffix
+
+    local removed_ranges = nil
+    if removed_suffix > prefix then
+        removed_ranges = {
+            {
+                start_col = byte_col(removed_line, prefix),
+                end_col = byte_col(removed_line, removed_suffix),
+                hl_group = hl_groups.removed_text,
+            },
+        }
+    end
+
+    local added_ranges = nil
+    if added_suffix > prefix then
+        added_ranges = {
+            {
+                start_col = byte_col(added_line, prefix),
+                end_col = byte_col(added_line, added_suffix),
+                hl_group = hl_groups.added_text,
+            },
+        }
+    end
+
+    return removed_ranges, added_ranges
+end
+
 ---@param title string
 ---@param lines string[]
 ---@param prefixes string[]
 ---@param line_hls string[]
+---@param intraline_hls (delta.spotlight.diff.IntralineRange[]?)[]
 ---@return delta.spotlight.diff.Content
-local function make_inline_content(title, lines, prefixes, line_hls)
+local function make_inline_content(title, lines, prefixes, line_hls, intraline_hls)
     local width = title_min_width(title)
     for i, line in ipairs(lines) do
         width = math.max(width, display_width((prefixes[i] or "") .. line))
@@ -223,6 +450,7 @@ local function make_inline_content(title, lines, prefixes, line_hls)
         lines = lines,
         prefixes = prefixes,
         line_hls = line_hls,
+        intraline_hls = intraline_hls,
         width = width,
         height = math.max(#lines, 1),
     }
@@ -233,13 +461,16 @@ end
 ---@param visible_side? delta.HunkSide
 ---@return delta.spotlight.diff.Content
 local function build_inline_content(hunk, title, visible_side)
-    local lines, prefixes, line_hls = {}, {}, {}
+    local lines, prefixes, line_hls, intraline_hls = {}, {}, {}, {}
+    local removed_line_idxs, added_line_idxs = {}, {}
     local old_ln, new_ln = resolve_display_starts(hunk, visible_side)
 
     for _, line in ipairs(hunk.removed.lines) do
         lines[#lines + 1] = line
         prefixes[#prefixes + 1] = string.format("%4d - ", old_ln)
         line_hls[#line_hls + 1] = hl_groups.removed
+        intraline_hls[#intraline_hls + 1] = nil
+        removed_line_idxs[#removed_line_idxs + 1] = #lines
         old_ln = old_ln + 1
     end
 
@@ -247,12 +478,15 @@ local function build_inline_content(hunk, title, visible_side)
         lines[#lines + 1] = "\\ No newline at end of file"
         prefixes[#prefixes + 1] = ""
         line_hls[#line_hls + 1] = hl_groups.removed
+        intraline_hls[#intraline_hls + 1] = nil
     end
 
     for _, line in ipairs(hunk.added.lines) do
         lines[#lines + 1] = line
         prefixes[#prefixes + 1] = string.format("%4d + ", new_ln)
         line_hls[#line_hls + 1] = hl_groups.added
+        intraline_hls[#intraline_hls + 1] = nil
+        added_line_idxs[#added_line_idxs + 1] = #lines
         new_ln = new_ln + 1
     end
 
@@ -260,15 +494,26 @@ local function build_inline_content(hunk, title, visible_side)
         lines[#lines + 1] = "\\ No newline at end of file"
         prefixes[#prefixes + 1] = ""
         line_hls[#line_hls + 1] = hl_groups.added
+        intraline_hls[#intraline_hls + 1] = nil
+    end
+
+    for _, pair in ipairs(match_changed_lines(hunk.removed.lines, hunk.added.lines)) do
+        local removed_ranges, added_ranges = intraline_ranges(
+            hunk.removed.lines[pair.removed_idx],
+            hunk.added.lines[pair.added_idx]
+        )
+        intraline_hls[removed_line_idxs[pair.removed_idx]] = removed_ranges
+        intraline_hls[added_line_idxs[pair.added_idx]] = added_ranges
     end
 
     if #lines == 0 then
         lines[1] = "(empty hunk)"
         prefixes[1] = ""
         line_hls[1] = hl_groups.neutral
+        intraline_hls[1] = nil
     end
 
-    return make_inline_content(title, lines, prefixes, line_hls)
+    return make_inline_content(title, lines, prefixes, line_hls, intraline_hls)
 end
 
 ---@param title string
@@ -301,6 +546,7 @@ local function make_side_content(title, left, right)
         lines = {},
         prefixes = {},
         line_hls = {},
+        intraline_hls = {},
         left = left,
         right = right,
         width = width,
@@ -313,8 +559,8 @@ end
 ---@param visible_side? delta.HunkSide
 ---@return delta.spotlight.diff.Content
 local function build_side_by_side_content(hunk, title, visible_side)
-    local left_lines, left_prefixes, left_hls = {}, {}, {}
-    local right_lines, right_prefixes, right_hls = {}, {}, {}
+    local left_lines, left_prefixes, left_hls, left_intraline_hls = {}, {}, {}, {}
+    local right_lines, right_prefixes, right_hls, right_intraline_hls = {}, {}, {}, {}
     local left_width, right_width = 1, 1
     local removed_start, added_start = resolve_display_starts(hunk, visible_side)
 
@@ -322,12 +568,14 @@ local function build_side_by_side_content(hunk, title, visible_side)
         left_lines[#left_lines + 1] = line
         left_prefixes[#left_prefixes + 1] = string.format("%4d - ", removed_start + i - 1)
         left_hls[#left_hls + 1] = hl_groups.removed
+        left_intraline_hls[#left_intraline_hls + 1] = nil
         left_width = math.max(left_width, display_width(left_prefixes[#left_prefixes] .. line))
     end
     if hunk.removed.no_nl_at_eof then
         left_lines[#left_lines + 1] = "\\ No newline at end of file"
         left_prefixes[#left_prefixes + 1] = ""
         left_hls[#left_hls + 1] = hl_groups.removed
+        left_intraline_hls[#left_intraline_hls + 1] = nil
         left_width = math.max(left_width, display_width(left_lines[#left_lines]))
     end
 
@@ -335,24 +583,37 @@ local function build_side_by_side_content(hunk, title, visible_side)
         right_lines[#right_lines + 1] = line
         right_prefixes[#right_prefixes + 1] = string.format("%4d + ", added_start + i - 1)
         right_hls[#right_hls + 1] = hl_groups.added
+        right_intraline_hls[#right_intraline_hls + 1] = nil
         right_width = math.max(right_width, display_width(right_prefixes[#right_prefixes] .. line))
     end
     if hunk.added.no_nl_at_eof then
         right_lines[#right_lines + 1] = "\\ No newline at end of file"
         right_prefixes[#right_prefixes + 1] = ""
         right_hls[#right_hls + 1] = hl_groups.added
+        right_intraline_hls[#right_intraline_hls + 1] = nil
         right_width = math.max(right_width, display_width(right_lines[#right_lines]))
+    end
+
+    for _, pair in ipairs(match_changed_lines(hunk.removed.lines, hunk.added.lines)) do
+        local removed_ranges, added_ranges = intraline_ranges(
+            hunk.removed.lines[pair.removed_idx],
+            hunk.added.lines[pair.added_idx]
+        )
+        left_intraline_hls[pair.removed_idx] = removed_ranges
+        right_intraline_hls[pair.added_idx] = added_ranges
     end
 
     return make_side_content(title, #left_lines > 0 and {
         lines = left_lines,
         prefixes = left_prefixes,
         line_hls = left_hls,
+        intraline_hls = left_intraline_hls,
         width = left_width,
     } or nil, #right_lines > 0 and {
         lines = right_lines,
         prefixes = right_prefixes,
         line_hls = right_hls,
+        intraline_hls = right_intraline_hls,
         width = right_width,
     } or nil)
 end
@@ -489,22 +750,49 @@ end
 ---@param lines string[]
 ---@param prefixes string[]
 ---@param line_hls string[]
-local function render_buffer(bufnr, lines, prefixes, line_hls)
+---@param intraline_hls (delta.spotlight.diff.IntralineRange[]?)[]?
+local function render_buffer(bufnr, lines, prefixes, line_hls, intraline_hls, target_width)
+    local padded_lines = {}
+    local max_width = target_width or 1
+
+    for i, line in ipairs(lines) do
+        local prefix = prefixes[i] or ""
+        max_width = math.max(max_width, display_width(prefix .. line))
+    end
+
+    for i, line in ipairs(lines) do
+        local prefix = prefixes[i] or ""
+        local text_width = display_width(prefix .. line)
+        local pad = math.max(max_width - text_width, 0)
+        padded_lines[i] = line .. string.rep(" ", pad)
+    end
+
     vim.bo[bufnr].modifiable = true
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, padded_lines)
     vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
 
     for i, line in ipairs(lines) do
+        local padded_line = padded_lines[i]
         local hl = line_hls[i] or hl_groups.neutral
         local prefix = prefixes[i] or ""
         vim.api.nvim_buf_set_extmark(bufnr, ns, i - 1, 0, {
-            line_hl_group = hl,
+            end_row = i - 1,
+            end_col = #padded_line,
+            hl_group = hl,
+            priority = 4000,
         })
         if prefix ~= "" then
             vim.api.nvim_buf_set_extmark(bufnr, ns, i - 1, 0, {
                 virt_text = { { prefix, hl_groups.line_nr } },
                 virt_text_pos = "inline",
                 priority = 300,
+            })
+        end
+        for _, range in ipairs(intraline_hls and intraline_hls[i] or {}) do
+            vim.api.nvim_buf_set_extmark(bufnr, ns, i - 1, range.start_col, {
+                end_col = range.end_col,
+                hl_group = range.hl_group,
+                priority = 5000,
             })
         end
         if line == "" and prefix == "" then
@@ -539,18 +827,34 @@ end
 ---@param state delta.spotlight.diff.State
 local function render(state)
     if state.content.format == "inline" then
-        render_buffer(state.bufnr, state.content.lines, state.content.prefixes, state.content.line_hls)
+        render_buffer(
+            state.bufnr,
+            state.content.lines,
+            state.content.prefixes,
+            state.content.line_hls,
+            state.content.intraline_hls,
+            state.content.width
+        )
         set_code_filetype(state.bufnr, state.content.path)
         return
     end
 
     if state.content.left and state.content.right and state.side_bufnr then
-        render_buffer(state.bufnr, state.content.left.lines, state.content.left.prefixes, state.content.left.line_hls)
+        render_buffer(
+            state.bufnr,
+            state.content.left.lines,
+            state.content.left.prefixes,
+            state.content.left.line_hls,
+            state.content.left.intraline_hls,
+            state.content.left.width
+        )
         render_buffer(
             state.side_bufnr,
             state.content.right.lines,
             state.content.right.prefixes,
-            state.content.right.line_hls
+            state.content.right.line_hls,
+            state.content.right.intraline_hls,
+            state.content.right.width
         )
         set_code_filetype(state.bufnr, state.content.path)
         set_code_filetype(state.side_bufnr, state.content.path)
@@ -561,7 +865,7 @@ local function render(state)
     if not pane then
         return
     end
-    render_buffer(state.bufnr, pane.lines, pane.prefixes, pane.line_hls)
+    render_buffer(state.bufnr, pane.lines, pane.prefixes, pane.line_hls, pane.intraline_hls, pane.width)
     set_code_filetype(state.bufnr, state.content.path)
 end
 

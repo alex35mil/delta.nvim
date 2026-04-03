@@ -24,6 +24,8 @@ M.groups = {
     popup_title = "DeltaSpotlightPopupTitle",
     popup_added = "DeltaSpotlightPopupAdded",
     popup_removed = "DeltaSpotlightPopupRemoved",
+    popup_added_text = "DeltaSpotlightPopupAddedText",
+    popup_removed_text = "DeltaSpotlightPopupRemovedText",
     popup_neutral = "DeltaSpotlightPopupNeutral",
     popup_line_nr = "DeltaSpotlightPopupLineNr",
 }
@@ -59,6 +61,8 @@ function M.setup()
         [M.groups.popup_title] = { link = "Title" },
         [M.groups.popup_added] = bg_only("DiffAdd", { link = "DiffAdd" }),
         [M.groups.popup_removed] = bg_only("DiffDelete", { link = "DiffDelete" }),
+        [M.groups.popup_added_text] = { link = "DiffText" },
+        [M.groups.popup_removed_text] = { link = "DiffText" },
         [M.groups.popup_neutral] = { link = M.groups.popup },
         [M.groups.popup_line_nr] = { link = "Comment" },
     }
