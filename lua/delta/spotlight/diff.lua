@@ -83,6 +83,7 @@ local ns = vim.api.nvim_create_namespace("delta.spotlight.diff")
 ---@class delta.spotlight.diff.OpenOpts
 ---@field winid? delta.WinId
 ---@field bufid? delta.BufId
+---@field hunk? delta.Hunk
 ---@field hunks? delta.Hunk[]
 ---@field side? delta.HunkSide
 ---@field path? string
@@ -973,6 +974,58 @@ local function open_hunk(opts)
     return state.winid
 end
 
+---@param hunks delta.Hunk[]
+---@param line number
+---@param side delta.HunkSide
+---@return delta.Hunk[]
+local function overlapping_hunks(hunks, line, side)
+    local matches = {}
+
+    for _, hunk in ipairs(hunks or {}) do
+        local node = side == "removed" and hunk.removed or hunk.added
+        if node.count == 0 then
+            if line == node.start or line == node.start + 1 then
+                matches[#matches + 1] = hunk
+            end
+        elseif hunk:start_line(side) <= line and hunk:end_line(side) >= line then
+            matches[#matches + 1] = hunk
+        end
+    end
+
+    return matches
+end
+
+---@param visible_hunks delta.Hunk[]
+---@param file? delta.spotlight.FileState
+---@param line number
+---@param side delta.HunkSide
+---@param scratch? delta.spotlight.ScratchBufContentType
+---@return delta.Hunk|nil
+local function resolve_visible_hunk(visible_hunks, file, line, side, scratch)
+    if scratch or not file or file.kind ~= "managed" then
+        return Git.find_hunk(visible_hunks or {}, line, side)
+    end
+
+    local matches = overlapping_hunks(visible_hunks or {}, line, side)
+    if #matches == 0 then
+        return nil
+    end
+
+    local unstaged_lookup = {}
+    for _, hunk in ipairs(file.hunks.unstaged or {}) do
+        unstaged_lookup[hunk] = true
+    end
+
+    local preferred = {}
+    for _, hunk in ipairs(matches) do
+        if unstaged_lookup[hunk] then
+            preferred[#preferred + 1] = hunk
+        end
+    end
+
+    return Git.find_hunk(#preferred > 0 and preferred or matches, line, side)
+end
+
 ---@param opts? delta.spotlight.diff.OpenOpts
 ---@return delta.spotlight.diff.OpenHunkOpts?
 ---@return string?
@@ -995,10 +1048,11 @@ local function resolve_current_hunk_opts(opts)
     local Spotlight = require("delta.spotlight.core")
 
     local cursor = vim.api.nvim_win_get_cursor(winid)
-    local default_hunks, default_side = Spotlight.hunks_for_buf(bufid)
+    local default_hunks, default_side, file = Spotlight.hunks_for_buf(bufid)
     local side = opts and opts.side or default_side or Paths.visible_side(bufname)
     local hunks = opts and opts.hunks or default_hunks
-    local hunk = Git.find_hunk(hunks or {}, cursor[1], side)
+    local _, scratch = Paths.normalize(bufname)
+    local hunk = opts and opts.hunk or resolve_visible_hunk(hunks or {}, file, cursor[1], side, scratch)
     if not hunk then
         return nil, "No hunk at cursor"
     end

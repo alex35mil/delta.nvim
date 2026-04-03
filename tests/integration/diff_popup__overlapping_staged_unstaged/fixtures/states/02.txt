@@ -1,0 +1,11 @@
+local M = {}
+
+function M.a()
+    return 1
+end
+
+function M.b()
+    return 2
+end
+
+return M
