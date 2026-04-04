@@ -23,7 +23,7 @@ T["unstages only lower staged hunk under cursor"] = function()
     H.nvim_wait_for_git_diff(nvim, "test.txt", true, true, 5000, 20)
     H.nvim_wait_for_git_diff(nvim, "test.txt", false, true, 5000, 20)
     H.nvim_wait_for_delta_file_state(nvim, [[function(file)
-        return #file.hunks.staged == 1 and #file.hunks.unstaged == 1
+        return #file.raw_hunks.staged == 1 and #file.raw_hunks.unstaged == 1
     end]], 5000, 20)
 
     nvim.api.nvim_win_set_cursor(0, { 8, 0 })

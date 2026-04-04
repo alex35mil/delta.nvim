@@ -33,6 +33,8 @@ local Notify = require("delta.notify")
 local Hunk = {}
 Hunk.__index = Hunk
 
+M.Hunk = Hunk
+
 ---@param old_start number
 ---@param old_count number
 ---@param new_start number
@@ -531,6 +533,137 @@ end
 function M.parse_hunks(output)
     local _, hunks = M.parse_diff(vim.split(output or "", "\n", { plain = true }))
     return hunks
+end
+
+---@class delta.VisibleDiffLine
+---@field kind "context"|"add"|"remove"
+---@field text string
+---@field old_line integer?
+---@field new_line integer?
+
+---@class delta.VisibleDiffBlock
+---@field header string
+---@field old_start integer
+---@field old_count integer
+---@field new_start integer
+---@field new_count integer
+---@field lines delta.VisibleDiffLine[]
+---@field old_lines string[]
+---@field new_lines string[]
+---@field old_map integer[]
+---@field new_map integer[]
+---@field old_no_nl_at_eof? boolean
+---@field new_no_nl_at_eof? boolean
+
+--- Parse merged diff blocks from git diff output while preserving full
+--- old/new line mapping, including inter-hunk context lines.
+---@param diff_lines string[]
+---@return string[] file_header
+---@return delta.VisibleDiffBlock[] blocks
+function M.parse_visible_diff(diff_lines)
+    local file_header = {}
+    local blocks = {}
+    local current = nil
+    local old_line = nil
+    local new_line = nil
+    local last_prefix = nil
+
+    for i, line in ipairs(diff_lines) do
+        if i == #diff_lines and line == "" then
+            break
+        end
+
+        if line:match("^@@ ") then
+            if current then
+                table.insert(blocks, current)
+            end
+
+            local os, oc, ns, nc = line:match("^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@")
+            local old_start = tonumber(os)
+            local new_start = tonumber(ns)
+            if not old_start or not new_start then
+                error("failed to parse hunk header: " .. line)
+            end
+
+            current = {
+                header = line,
+                old_start = old_start,
+                old_count = tonumber(oc) or 1,
+                new_start = new_start,
+                new_count = tonumber(nc) or 1,
+                lines = {},
+                old_lines = {},
+                new_lines = {},
+                old_map = {},
+                new_map = {},
+            }
+            old_line = old_start
+            new_line = new_start
+            last_prefix = nil
+        elseif current then
+            if line == "\\ No newline at end of file" then
+                if last_prefix == "+" then
+                    current.new_no_nl_at_eof = true
+                elseif last_prefix == "-" then
+                    current.old_no_nl_at_eof = true
+                end
+            else
+                local prefix = line:sub(1, 1)
+                local text = line:sub(2)
+
+                if prefix == " " then
+                    current.lines[#current.lines + 1] = {
+                        kind = "context",
+                        text = text,
+                        old_line = old_line,
+                        new_line = new_line,
+                    }
+                    current.old_lines[#current.old_lines + 1] = text
+                    current.old_map[#current.old_map + 1] = old_line
+                    current.new_lines[#current.new_lines + 1] = text
+                    current.new_map[#current.new_map + 1] = new_line
+                    old_line = old_line + 1
+                    new_line = new_line + 1
+                elseif prefix == "+" then
+                    current.lines[#current.lines + 1] = {
+                        kind = "add",
+                        text = text,
+                        new_line = new_line,
+                    }
+                    current.new_lines[#current.new_lines + 1] = text
+                    current.new_map[#current.new_map + 1] = new_line
+                    new_line = new_line + 1
+                elseif prefix == "-" then
+                    current.lines[#current.lines + 1] = {
+                        kind = "remove",
+                        text = text,
+                        old_line = old_line,
+                    }
+                    current.old_lines[#current.old_lines + 1] = text
+                    current.old_map[#current.old_map + 1] = old_line
+                    old_line = old_line + 1
+                end
+
+                last_prefix = prefix
+            end
+        else
+            table.insert(file_header, line)
+        end
+    end
+
+    if current then
+        table.insert(blocks, current)
+    end
+
+    return file_header, blocks
+end
+
+--- Parse merged visible diff blocks from git diff output.
+---@param output string
+---@return delta.VisibleDiffBlock[]
+function M.parse_visible_diff_blocks(output)
+    local _, blocks = M.parse_visible_diff(vim.split(output or "", "\n", { plain = true }))
+    return blocks
 end
 
 --- Normalize diff file headers for partial patch application.

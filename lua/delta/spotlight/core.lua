@@ -91,8 +91,16 @@ local wins = {}
 ---@field gitdir string Absolute .git directory for the source path.
 ---@field status delta.FileStatus Cached git status for the source path.
 ---@field bufs delta.spotlight.Bufs Buffer realizations associated with this source path.
----@field hunks delta.Hunks Cached git hunks for the source path.
+---@field raw_hunks delta.Hunks Cached raw git patch hunks for the source path.
+---@field visible_hunks delta.Hunks Cached linematch-visible hunks for spotlight UI resolution/navigation.
+---@field action_hunks delta.Hunks Cached contiguous full-text hunks for stage/reset target resolution.
 ---@field picker_nav? delta.spotlight.PickerNav Picker navigation metadata associated with the source path.
+
+---@class delta.spotlight.FileData
+---@field status delta.FileStatus
+---@field raw_hunks delta.Hunks
+---@field visible_hunks delta.Hunks
+---@field action_hunks delta.Hunks
 
 ---@class delta.spotlight.UnmanagedFileState
 ---@field kind "unmanaged"
@@ -298,9 +306,15 @@ end
 
 ---@param file delta.spotlight.FileState?
 ---@return delta.Hunks
-local function file_hunks(file)
+local function file_raw_hunks(file)
     local managed = as_managed_file(file)
-    return managed and managed.hunks or empty_hunks()
+    return managed and managed.raw_hunks or empty_hunks()
+end
+
+---@return delta.Hunks
+local function file_visible_hunks(file)
+    local managed = as_managed_file(file)
+    return managed and managed.visible_hunks or file_raw_hunks(file)
 end
 
 ---@param file delta.spotlight.FileState
@@ -564,7 +578,7 @@ local function make_context(bufid)
         path = path,
         requested_mode = win and win.requested_mode or nil,
         resolved_mode = win and win.resolved_mode or nil,
-        hunks = file_hunks(file),
+        hunks = file_raw_hunks(file),
         visual = visual,
         expand = function(step)
             M.expand_context(bufid, step)
@@ -677,20 +691,21 @@ function M.hunks_for_buf(bufid)
     bufid = bufid or vim.api.nvim_get_current_buf()
     local file, _, scratch = file_and_path_for_buf(bufid)
     local side = visible_hunk_side_for_buf(bufid)
-    local hunks = file_hunks(file)
+    local raw_hunks = file_raw_hunks(file)
+    local visible_hunks = file_visible_hunks(file)
 
     if scratch then
         local managed = as_managed_file(file)
         local scratch_buf = managed and managed.bufs.scratch[scratch] or nil
-        return (scratch_buf and scratch_buf.rendered_hunks) or hunks.staged, side, file
+        return (scratch_buf and scratch_buf.rendered_hunks) or raw_hunks.staged, side, file
     end
 
     local visible = {}
-    for _, hunk in ipairs(hunks.unstaged) do
+    for _, hunk in ipairs(visible_hunks.unstaged) do
         visible[#visible + 1] = hunk
     end
-    for _, hunk in ipairs(hunks.staged) do
-        visible[#visible + 1] = remap_staged_hunk_to_worktree(hunk, hunks.unstaged)
+    for _, hunk in ipairs(visible_hunks.staged) do
+        visible[#visible + 1] = remap_staged_hunk_to_worktree(hunk, raw_hunks.unstaged)
     end
 
     sort_hunks_by_visible_position(visible, side)
@@ -948,25 +963,104 @@ end
 -- Note on file state refreshing: when some branch starts refreshing a file state and rendering spotlight, it acquires refreshing_file_state_locks for the path.
 -- So before handling a render flow, execution should bail if the lock for the path cannot be acquired.
 
+---@param segment delta.VisibleSegment
+---@return delta.Hunk
+local function visible_hunk_from_segment(segment)
+    local removed_start = segment.old_start or 0
+    local added_start = segment.new_start or segment.start_line
+    local hunk = Git.Hunk.new(removed_start, segment.old_count, added_start, segment.new_count)
+    hunk.removed.lines = vim.deepcopy(segment.old_lines)
+    hunk.added.lines = vim.deepcopy(segment.new_lines)
+    return hunk
+end
+
+---@param base_lines string[]
+---@param current_lines string[]
+---@param contiguous? boolean
+---@return delta.Hunk[]
+local function visible_hunks_from_lines(base_lines, current_lines, contiguous)
+    local segments = contiguous and Hunks.contiguous_segments_from_lines(base_lines, current_lines)
+        or Hunks.linematch_segments_from_lines(base_lines, current_lines)
+    local visible = {}
+    for _, segment in ipairs(segments) do
+        visible[#visible + 1] = visible_hunk_from_segment(segment)
+    end
+    return visible
+end
+
+---@param path string
+---@param source_bufid? delta.BufId
+---@return string[]?
+local function visible_current_lines(path, source_bufid)
+    local bufid = source_bufid
+    if not bufid then
+        local current = as_managed_file(files[path])
+        bufid = current and current.bufs.source and current.bufs.source.buf or nil
+    end
+
+    if
+        bufid
+        and vim.api.nvim_buf_is_valid(bufid)
+        and vim.api.nvim_buf_is_loaded(bufid)
+        and path_for_buf(bufid) == path
+        and vim.bo[bufid].buftype == ""
+    then
+        return vim.api.nvim_buf_get_lines(bufid, 0, -1, false)
+    end
+end
+
 --- Fetch fresh file status and diff hunks for a path.
 --- Must be called inside Git.async().
 ---@param path string
+---@param source_bufid? delta.BufId
 ---@return boolean ok
----@return delta.FileStatus|nil status
----@return delta.Hunks|nil hunks
+---@return delta.spotlight.FileData? data
 ---@return delta.GitContextErrorKind? errkind
-local function fetch_file_data(path)
+local function fetch_file_data(path, source_bufid)
     local sok, status, sctxerr = Git.file_status(path)
     if not sok or not status then
-        return false, nil, nil, sctxerr
+        return false, nil, sctxerr
     end
 
-    local hok, hunks = Git.get_diff_hunks(path)
+    local hok, raw_hunks = Git.get_diff_hunks(path)
     if not hok then
-        return false, nil, nil, nil
+        return false, nil, nil
     end
 
-    return true, status, hunks, nil
+    local visible_hunks = { staged = {}, unstaged = {} }
+    local action_hunks = { staged = {}, unstaged = {} }
+
+    local ok_index, index_lines = Git.get_index_lines(path)
+    if not ok_index or not index_lines then
+        return false, nil, nil
+    end
+
+    local current_lines = visible_current_lines(path, source_bufid)
+    if not current_lines then
+        local ok_worktree, worktree_lines = Git.get_worktree_lines(path)
+        if not ok_worktree or not worktree_lines then
+            return false, nil, nil
+        end
+        current_lines = worktree_lines
+    end
+    visible_hunks.unstaged = visible_hunks_from_lines(index_lines, current_lines)
+    action_hunks.unstaged = visible_hunks_from_lines(index_lines, current_lines, true)
+
+    local ok_head, head_lines = Git.get_head_lines(path)
+    if not ok_head or not head_lines then
+        return false, nil, nil
+    end
+    visible_hunks.staged = visible_hunks_from_lines(head_lines, index_lines)
+    action_hunks.staged = visible_hunks_from_lines(head_lines, index_lines, true)
+
+    return true,
+        {
+            status = status,
+            raw_hunks = raw_hunks,
+            visible_hunks = visible_hunks,
+            action_hunks = action_hunks,
+        },
+        nil
 end
 
 ---@param file delta.spotlight.FileState
@@ -1025,16 +1119,18 @@ local function refresh_file_state(path, source_bufid)
     bufs.scratch = bufs.scratch or {}
 
     if gok and gitdir then
-        local dok, status, hunks, dataerr = fetch_file_data(path)
+        local dok, file_data, dataerr = fetch_file_data(path, source_bufid)
 
-        if dok and status and hunks then
+        if dok and file_data then
             files[path] = {
                 kind = "managed",
                 path = path,
                 gitdir = gitdir,
                 bufs = bufs,
-                status = status,
-                hunks = hunks,
+                status = file_data.status,
+                raw_hunks = file_data.raw_hunks,
+                visible_hunks = file_data.visible_hunks,
+                action_hunks = file_data.action_hunks,
                 picker_nav = current and current.picker_nav or nil,
             }
 
@@ -1292,7 +1388,7 @@ local function apply_scratch_diff_highlights(bufid, file, content_type)
     end
 
     local scratch = mfile.bufs.scratch[content_type]
-    local hunks = scratch and scratch.rendered_hunks or mfile.hunks.staged
+    local hunks = scratch and scratch.rendered_hunks or mfile.raw_hunks.staged
 
     for _, hunk in ipairs(hunks) do
         local start_line = math.max(1, math.min(hunk:start_line("added"), line_count))
@@ -1348,7 +1444,7 @@ local function ensure_file_scratch_buf(file, content_type, mode)
 
     local rendered_hunks
     if content_type == "staged" then
-        lines, rendered_hunks = build_staged_scratch_view(lines, file.hunks.staged)
+        lines, rendered_hunks = build_staged_scratch_view(lines, file.raw_hunks.staged)
     end
 
     vim.bo[bufid].buftype = ""
@@ -1751,7 +1847,7 @@ local function setup_autocmds()
             end
 
             local fold = folds[bufid]
-            local hunks = Hunks.for_mode(win.resolved_mode, file_hunks(file))
+            local hunks = Hunks.for_mode(win.resolved_mode, file_visible_hunks(file))
             local current_hunk, total_hunks = Winbar.current_hunk_position(winid, win, file)
             if win.last_hunk_index == current_hunk and win.last_hunk_total == total_hunks then
                 return
@@ -1908,11 +2004,14 @@ local function setup_watcher()
             for path, file in pairs(files) do
                 local mfile = as_managed_file(file)
                 if mfile then
-                    local ok, status, hunks = fetch_file_data(mfile.path)
+                    local source_bufid = mfile.bufs.source and mfile.bufs.source.buf or nil
+                    local ok, file_data = fetch_file_data(mfile.path, source_bufid)
 
-                    if ok and status and hunks then
-                        mfile.status = status
-                        mfile.hunks = hunks
+                    if ok and file_data then
+                        mfile.status = file_data.status
+                        mfile.raw_hunks = file_data.raw_hunks
+                        mfile.visible_hunks = file_data.visible_hunks
+                        mfile.action_hunks = file_data.action_hunks
                     else
                         refresh_file_state(path)
                     end
@@ -2330,6 +2429,15 @@ function M.cycle_mode(bufid)
     end)
 end
 
+---@param winid delta.WinId
+---@param bufid delta.BufId
+---@param line integer
+local function set_cursor_clamped(winid, bufid, line)
+    local line_count = vim.api.nvim_buf_line_count(bufid)
+    local clamped = math.max(1, math.min(line, math.max(line_count, 1)))
+    vim.api.nvim_win_set_cursor(winid, { clamped, 0 })
+end
+
 --- Jump to the next hunk group. Wraps to the first if at the end.
 ---@param bufid delta.BufId
 function M.next_hunk(bufid)
@@ -2349,7 +2457,7 @@ function M.next_hunk(bufid)
     for i, g in ipairs(groups) do
         if g.start_line == cur_line then
             local next_group = groups[i + 1] or groups[1]
-            vim.api.nvim_win_set_cursor(winid, { next_group.start_line, 0 })
+            set_cursor_clamped(winid, bufid, next_group.start_line)
             vim.cmd("normal! zz")
             return
         end
@@ -2357,13 +2465,13 @@ function M.next_hunk(bufid)
 
     for _, g in ipairs(groups) do
         if g.start_line > cur_line then
-            vim.api.nvim_win_set_cursor(winid, { g.start_line, 0 })
+            set_cursor_clamped(winid, bufid, g.start_line)
             vim.cmd("normal! zz")
             return
         end
     end
 
-    vim.api.nvim_win_set_cursor(winid, { groups[1].start_line, 0 })
+    set_cursor_clamped(winid, bufid, groups[1].start_line)
     vim.cmd("normal! zz")
 end
 
@@ -2386,7 +2494,7 @@ function M.prev_hunk(bufid)
     for i, g in ipairs(groups) do
         if g.start_line == cur_line then
             local prev_group = groups[i - 1] or groups[#groups]
-            vim.api.nvim_win_set_cursor(winid, { prev_group.start_line, 0 })
+            set_cursor_clamped(winid, bufid, prev_group.start_line)
             vim.cmd("normal! zz")
             return
         end
@@ -2395,13 +2503,13 @@ function M.prev_hunk(bufid)
     for i = #groups, 1, -1 do
         local g = groups[i]
         if g.start_line < cur_line then
-            vim.api.nvim_win_set_cursor(winid, { g.start_line, 0 })
+            set_cursor_clamped(winid, bufid, g.start_line)
             vim.cmd("normal! zz")
             return
         end
     end
 
-    vim.api.nvim_win_set_cursor(winid, { groups[#groups].start_line, 0 })
+    set_cursor_clamped(winid, bufid, groups[#groups].start_line)
     vim.cmd("normal! zz")
 end
 
@@ -2625,26 +2733,27 @@ local function collect_toggle_target(source, action, start_line, end_line)
     return { action = action, hunks = matches }
 end
 
----@param hunks delta.Hunks
+---@param visible_hunks delta.Hunks
+---@param raw_hunks delta.Hunks
 ---@param start_line number
 ---@param end_line number
 ---@return { action: "stage"|"unstage", hunks: delta.Hunk[] }?
-local function resolve_toggle_target(hunks, start_line, end_line)
-    local unstaged_target = collect_toggle_target(hunks.unstaged, "stage", start_line, end_line)
+local function resolve_toggle_target(visible_hunks, raw_hunks, start_line, end_line)
+    local unstaged_target = collect_toggle_target(visible_hunks.unstaged, "stage", start_line, end_line)
     if unstaged_target then
         return unstaged_target
     end
 
-    local staged_start, staged_end = Git.worktree_to_index_range(start_line, end_line, hunks.unstaged)
-    return collect_toggle_target(hunks.staged, "unstage", staged_start, staged_end)
+    local staged_start, staged_end = Git.worktree_to_index_range(start_line, end_line, raw_hunks.unstaged)
+    return collect_toggle_target(raw_hunks.staged, "unstage", staged_start, staged_end)
 end
 
----@param hunks delta.Hunks
+---@param visible_hunks delta.Hunks
 ---@param start_line number
 ---@param end_line number
 ---@return delta.Hunk[]?
-local function resolve_reset_hunks(hunks, start_line, end_line)
-    local target = collect_toggle_target(hunks.unstaged, "stage", start_line, end_line)
+local function resolve_reset_hunks(visible_hunks, start_line, end_line)
+    local target = collect_toggle_target(visible_hunks.unstaged, "stage", start_line, end_line)
     return target and target.hunks or nil
 end
 
@@ -2712,35 +2821,33 @@ end
 ---@param start_line number
 ---@param end_line number
 ---@param partial boolean
+---@param source_hunks? delta.Hunk[]
 ---@return boolean success
 ---@return string? err
-local function apply_toggle_target(path, target, start_line, end_line, partial)
+local function apply_toggle_target(path, target, start_line, end_line, partial, source_hunks)
     local ctx, ctx_err = get_toggle_patch_context(path, target.action)
     if not ctx then
         return false, ctx_err
     end
 
-    local hunks_by_key = {}
+    local raw_hunks_by_key = {}
     for _, hunk in ipairs(ctx.hunks) do
-        hunks_by_key[hunk_key(hunk)] = hunk
+        raw_hunks_by_key[hunk_key(hunk)] = hunk
     end
 
     local selected_hunks = {}
 
-    for _, target_hunk in ipairs(target.hunks) do
-        local source_hunk = hunks_by_key[hunk_key(target_hunk)]
-        if not source_hunk then
-            return false, "failed to resolve hunk"
-        end
-
-        local shape = source_hunk
-        if partial then
-            shape = Git.select_hunk_lines(source_hunk, start_line, end_line)
-        end
-
+    if partial then
+        local shape = Git.create_partial_hunk(source_hunks or target.hunks, start_line, end_line)
         if shape then
+            local source_hunk = (#target.hunks == 1 and raw_hunks_by_key[hunk_key(target.hunks[1])]) or shape
+            selected_hunks[1] = Git.populate_hunk_lines(shape, ctx.base_lines, ctx.current_lines, source_hunk)
+        end
+    else
+        for _, target_hunk in ipairs(target.hunks) do
+            local source_hunk = raw_hunks_by_key[hunk_key(target_hunk)] or target_hunk
             selected_hunks[#selected_hunks + 1] =
-                Git.populate_hunk_lines(shape, ctx.base_lines, ctx.current_lines, source_hunk)
+                Git.populate_hunk_lines(target_hunk, ctx.base_lines, ctx.current_lines, source_hunk)
         end
     end
 
@@ -2784,34 +2891,32 @@ end
 ---@param start_line number
 ---@param end_line number
 ---@param partial boolean
+---@param source_hunks? delta.Hunk[]
 ---@return boolean success
 ---@return string? err
-local function apply_reset_hunks(bufid, path, target_hunks, start_line, end_line, partial)
+local function apply_reset_hunks(bufid, path, target_hunks, start_line, end_line, partial, source_hunks)
     local ctx, ctx_err = get_reset_patch_context(path)
     if not ctx then
         return false, ctx_err
     end
 
-    local hunks_by_key = {}
+    local raw_hunks_by_key = {}
     for _, hunk in ipairs(ctx.hunks) do
-        hunks_by_key[hunk_key(hunk)] = hunk
+        raw_hunks_by_key[hunk_key(hunk)] = hunk
     end
 
     local selected_hunks = {}
-    for _, target_hunk in ipairs(target_hunks) do
-        local source_hunk = hunks_by_key[hunk_key(target_hunk)]
-        if not source_hunk then
-            return false, "failed to resolve hunk"
-        end
-
-        local shape = source_hunk
-        if partial then
-            shape = Git.select_hunk_lines(source_hunk, start_line, end_line)
-        end
-
+    if partial then
+        local shape = Git.create_partial_hunk(source_hunks or target_hunks, start_line, end_line)
         if shape then
+            local source_hunk = (#target_hunks == 1 and raw_hunks_by_key[hunk_key(target_hunks[1])]) or shape
+            selected_hunks[1] = Git.populate_hunk_lines(shape, ctx.base_lines, ctx.current_lines, source_hunk)
+        end
+    else
+        for _, target_hunk in ipairs(target_hunks) do
+            local source_hunk = raw_hunks_by_key[hunk_key(target_hunk)] or target_hunk
             selected_hunks[#selected_hunks + 1] =
-                Git.populate_hunk_lines(shape, ctx.base_lines, ctx.current_lines, source_hunk)
+                Git.populate_hunk_lines(target_hunk, ctx.base_lines, ctx.current_lines, source_hunk)
         end
     end
 
@@ -2966,29 +3071,22 @@ function M.toggle_stage_hunk(bufid, start_line, end_line, cb)
                     return
                 end
 
-                local cached_target = resolve_toggle_target(current_file.hunks, range_start, range_end)
+                local cached_target =
+                    resolve_toggle_target(current_file.action_hunks, current_file.raw_hunks, range_start, range_end)
 
-                local ok_data, fresh_status, fresh_hunks = fetch_file_data(path)
-                if not ok_data or not fresh_status or not fresh_hunks then
+                local source_bufid = current_file.bufs.source and current_file.bufs.source.buf or nil
+                local ok_data, fresh_file_data = fetch_file_data(path, source_bufid)
+                if not ok_data or not fresh_file_data then
                     Notify.info("Failed to refresh git state")
                     return
                 end
 
-                local fresh_target = resolve_toggle_target(fresh_hunks, range_start, range_end)
-
-                local cached_serialized = cached_target
-                        and serialize_toggle_target(cached_target.action, cached_target.hunks)
-                    or nil
-                local fresh_serialized = fresh_target
-                        and serialize_toggle_target(fresh_target.action, fresh_target.hunks)
-                    or nil
-
-                if not vim.deep_equal(cached_serialized, fresh_serialized) then
-                    Notify.error(
-                        "Spotlight view is stale; stage aborted to avoid acting on outdated hunks. Most likely, it's a bug in the plugin. If reproducible, please file an issue."
-                    )
-                    return
-                end
+                local fresh_target = resolve_toggle_target(
+                    fresh_file_data.action_hunks,
+                    fresh_file_data.raw_hunks,
+                    range_start,
+                    range_end
+                )
 
                 if not fresh_target then
                     Notify.info("No hunk at cursor")
@@ -2998,7 +3096,7 @@ function M.toggle_stage_hunk(bufid, start_line, end_line, cb)
                 if
                     fresh_target.action == "unstage"
                     and not partial_selection
-                    and target_overlaps_hunks(fresh_target, fresh_hunks.unstaged)
+                    and target_overlaps_hunks(fresh_target, fresh_file_data.raw_hunks.unstaged)
                 then
                     local choice = vim.fn.confirm(
                         "This staged hunk overlaps unstaged changes and may unstage more than expected. Continue?",
@@ -3013,10 +3111,20 @@ function M.toggle_stage_hunk(bufid, start_line, end_line, cb)
 
                 local apply_start, apply_end = range_start, range_end
                 if fresh_target.action == "unstage" and partial_selection then
-                    apply_start, apply_end = Git.worktree_to_index_range(range_start, range_end, fresh_hunks.unstaged)
+                    apply_start, apply_end =
+                        Git.worktree_to_index_range(range_start, range_end, fresh_file_data.raw_hunks.unstaged)
                 end
 
-                local ok, apply_err = apply_toggle_target(path, fresh_target, apply_start, apply_end, partial_selection)
+                local visible_source_hunks = fresh_target.action == "unstage" and fresh_file_data.raw_hunks.staged
+                    or fresh_file_data.action_hunks.unstaged
+                local ok, apply_err = apply_toggle_target(
+                    path,
+                    fresh_target,
+                    apply_start,
+                    apply_end,
+                    partial_selection,
+                    visible_source_hunks
+                )
                 if not ok then
                     Notify.info(apply_err or "No hunk at cursor")
                     return
@@ -3122,28 +3230,20 @@ function M.reset_hunk(bufid, start_line, end_line, cb)
                     return
                 end
 
-                local cached_hunks = resolve_reset_hunks(current_file.hunks, range_start, range_end)
+                local cached_hunks = resolve_reset_hunks(current_file.action_hunks, range_start, range_end)
 
-                local ok_data, fresh_status, fresh_hunks = fetch_file_data(path)
-                if not ok_data or not fresh_status or not fresh_hunks then
+                local source_bufid = current_file.bufs.source and current_file.bufs.source.buf or nil
+                local ok_data, fresh_file_data = fetch_file_data(path, source_bufid)
+                if not ok_data or not fresh_file_data then
                     Notify.info("Failed to refresh git state")
                     return
                 end
 
-                local fresh_hunk_target = resolve_reset_hunks(fresh_hunks, range_start, range_end)
-                local cached_serialized = cached_hunks and serialize_toggle_target("stage", cached_hunks) or nil
-                local fresh_serialized = fresh_hunk_target and serialize_toggle_target("stage", fresh_hunk_target)
-                    or nil
-
-                if not vim.deep_equal(cached_serialized, fresh_serialized) then
-                    Notify.error(
-                        "Spotlight view is stale; reset aborted to avoid acting on outdated hunks. Most likely, it's a bug in the plugin. If reproducible, please file an issue."
-                    )
-                    return
-                end
-
+                local fresh_hunk_target = resolve_reset_hunks(fresh_file_data.action_hunks, range_start, range_end)
                 if not fresh_hunk_target then
-                    if collect_toggle_target(fresh_hunks.staged, "unstage", range_start, range_end) then
+                    if
+                        collect_toggle_target(fresh_file_data.action_hunks.staged, "unstage", range_start, range_end)
+                    then
                         Notify.info("Reset is only supported for unstaged hunks")
                     else
                         Notify.info("No hunk at cursor")
@@ -3151,8 +3251,15 @@ function M.reset_hunk(bufid, start_line, end_line, cb)
                     return
                 end
 
-                local ok, apply_err =
-                    apply_reset_hunks(bufid, path, fresh_hunk_target, range_start, range_end, partial_selection)
+                local ok, apply_err = apply_reset_hunks(
+                    bufid,
+                    path,
+                    fresh_hunk_target,
+                    range_start,
+                    range_end,
+                    partial_selection,
+                    fresh_file_data.action_hunks.unstaged
+                )
                 if not ok then
                     Notify.info(apply_err or "No hunk at cursor")
                     return

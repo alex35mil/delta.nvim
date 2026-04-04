@@ -38,9 +38,9 @@ T["prefers overlapping unstaged hunk over staged hunk"] = function()
             local file = file_for_buf(vim.api.nvim_get_current_buf())
             return file ~= nil
                 and file.path ~= ""
-                and file.hunks ~= nil
-                and #file.hunks.staged == 1
-                and #file.hunks.unstaged == 1
+                and file.raw_hunks ~= nil
+                and #file.raw_hunks.staged == 1
+                and #file.raw_hunks.unstaged == 1
         end, 20)
     end)
     assert(ready, "timed out waiting for overlapping staged/unstaged hunks")

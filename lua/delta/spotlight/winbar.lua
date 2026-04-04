@@ -34,6 +34,12 @@ local function resolve_hunks(mode, hunks)
     return {}
 end
 
+---@param file delta.spotlight.FileState
+---@return delta.Hunks
+local function visible_hunks_for_file(file)
+    return file.kind == "managed" and file.visible_hunks or file.raw_hunks
+end
+
 ---@param winid delta.WinId
 ---@param win delta.spotlight.WinState
 ---@param file delta.spotlight.FileState
@@ -44,7 +50,7 @@ function M.current_hunk_position(winid, win, file)
         return nil, 0
     end
 
-    local hunks = resolve_hunks(win.resolved_mode, file.hunks)
+    local hunks = resolve_hunks(win.resolved_mode, visible_hunks_for_file(file))
     local total = #hunks
     if total == 0 then
         return nil, 0

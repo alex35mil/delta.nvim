@@ -209,7 +209,7 @@ function M.nvim_wait_for_delta_file_state(nvim, predicate, timeout, interval)
 
         return vim.wait(t or 5000, function()
             local file = file_for_buf(vim.api.nvim_get_current_buf())
-            if file == nil or file.path == "" or file.status == nil or file.hunks == nil then
+            if file == nil or file.path == "" or file.status == nil or file.raw_hunks == nil then
                 return false
             end
 

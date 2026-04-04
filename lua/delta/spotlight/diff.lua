@@ -1316,7 +1316,7 @@ local function resolve_visible_hunk(visible_hunks, file, line, side, scratch)
     end
 
     local unstaged_lookup = {}
-    for _, hunk in ipairs(file.hunks.unstaged or {}) do
+    for _, hunk in ipairs((file.visible_hunks and file.visible_hunks.unstaged) or file.raw_hunks.unstaged or {}) do
         unstaged_lookup[hunk] = true
     end
 
