@@ -534,7 +534,8 @@ require("delta").setup({
 
 `spotlight.actions.open_diff` opens a popup for the hunk under the cursor so you can inspect the detailed diff.
 
-<img width="1025" height="164" alt="CleanShot 2026-04-03 at 19 41 29@2x" src="https://github.com/user-attachments/assets/35041478-13d9-4ff5-b35a-f4dea6d81d12" />
+<img width="1020" height="197" alt="Delta diff popup" src="https://github.com/user-attachments/assets/26768755-e06c-469b-8077-7eb72b0f434d" />
+
 
 ## Commands
 
