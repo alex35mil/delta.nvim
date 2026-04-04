@@ -846,25 +846,35 @@ function M.find_hunk(hunks, line, side)
 
     local best_match = nil
     local best_starts_here = false
+    local best_has_lines = false
     local best_span = math.huge
 
     for _, hunk in ipairs(hunks or {}) do
         local node = side == "removed" and hunk.removed or hunk.added
-        if node.count == 0 then
-            if line == node.start or line == node.start + 1 then
-                return hunk
-            end
-        elseif hunk:start_line(side) <= line and hunk:end_line(side) >= line then
-            local starts_here = hunk:start_line(side) == line
-            local span = hunk:lines(side)
+        local matches = false
+        local starts_here = false
+        local has_lines = node.count > 0
+        local span = 1
 
+        if has_lines then
+            matches = hunk:start_line(side) <= line and hunk:end_line(side) >= line
+            starts_here = hunk:start_line(side) == line
+            span = hunk:lines(side)
+        else
+            matches = line == node.start or line == node.start + 1
+            starts_here = line == node.start
+        end
+
+        if matches then
             if
                 not best_match
-                or (starts_here and not best_starts_here)
-                or (starts_here == best_starts_here and span < best_span)
+                or (has_lines and not best_has_lines)
+                or (has_lines == best_has_lines and starts_here and not best_starts_here)
+                or (has_lines == best_has_lines and starts_here == best_starts_here and span < best_span)
             then
                 best_match = hunk
                 best_starts_here = starts_here
+                best_has_lines = has_lines
                 best_span = span
             end
         end

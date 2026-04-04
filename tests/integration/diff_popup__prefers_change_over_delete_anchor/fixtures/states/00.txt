@@ -1,0 +1,10 @@
+for key, entry in pairs(announcements) do
+    if
+        type(key) == "string"
+        and type(entry) == "table"
+        and type(entry.lines) == "table"
+        and #entry.lines > 0
+    then
+        keys[#keys + 1] = key
+    end
+end
