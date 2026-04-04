@@ -2156,7 +2156,7 @@ function M.ensure(mode)
             },
         }
 
-        render(winid, display.buf, { cursor = "first", trigger = "fn:ensure" })
+        render(winid, display.buf, { cursor = "nearest", trigger = "fn:ensure" })
         setup_winhighlight(winid)
         setup_local_keymaps(display.buf)
     end
