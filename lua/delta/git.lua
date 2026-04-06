@@ -778,6 +778,7 @@ local function is_missing_blob(_, stderr)
         or stderr:match("not in the index") ~= nil
         or stderr:match("invalid object name 'HEAD'") ~= nil
         or stderr:match("bad revision 'HEAD'") ~= nil
+        or stderr:match("unknown revision or path not in the working tree") ~= nil
 end
 
 ---@param args string[]
