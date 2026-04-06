@@ -2617,7 +2617,7 @@ function M.reset_file(bufid, cb)
 
     if Config.options.reset.confirm then
         local baseline = target == "head" and "HEAD" or target == "index" and "index" or "deletion"
-        local choice = vim.fn.confirm("Reset current file to " .. baseline .. "?", "&Yes\n&No", 2)
+        local choice = vim.fn.confirm("Reset current file to " .. baseline .. "?\n", "&Yes\n&No", 2)
         if choice ~= 1 then
             Notify.info("Reset cancelled")
             return
@@ -2997,7 +2997,7 @@ end
 ---@return boolean proceed
 local function ensure_buffer_saved_for_toggle_stage_hunk(bufid)
     if not Config.options.spotlight.autosave_before_stage then
-        local choice = vim.fn.confirm("Buffer has unsaved changes. Save and continue?", "&Yes\n&No", 1)
+        local choice = vim.fn.confirm("Buffer has unsaved changes. Save and continue?\n", "&Yes\n&No", 1)
         if choice ~= 1 then
             Notify.info("Operation cancelled")
             return false
@@ -3099,7 +3099,7 @@ function M.toggle_stage_hunk(bufid, start_line, end_line, cb)
                     and target_overlaps_hunks(fresh_target, fresh_file_data.raw_hunks.unstaged)
                 then
                     local choice = vim.fn.confirm(
-                        "This staged hunk overlaps unstaged changes and may unstage more than expected. Continue?",
+                        "This staged hunk overlaps unstaged changes and may unstage more than expected. Continue?\n",
                         "&Yes\n&No",
                         2
                     )

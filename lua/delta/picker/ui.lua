@@ -1062,7 +1062,7 @@ local function make_context()
 
             if node.is_dir then
                 local verb = is_staged and "Unstage" or "Stage"
-                local choice = vim.fn.confirm(verb .. " all files in " .. node.path .. "/?", "&Yes\n&No", 2)
+                local choice = vim.fn.confirm(verb .. " all files in " .. node.path .. "/?\n", "&Yes\n&No", 2)
                 if choice == 1 then
                     do_toggle()
                 end
@@ -1091,7 +1091,7 @@ local function make_context()
             end
 
             if Config.options.reset.confirm then
-                local choice = vim.fn.confirm(reset_confirm_message(node.section, targets), "&Yes\n&No", 2)
+                local choice = vim.fn.confirm(reset_confirm_message(node.section, targets) .. "\n", "&Yes\n&No", 2)
                 if choice ~= 1 then
                     Notify.info("Reset cancelled")
                     return false
