@@ -255,7 +255,7 @@ delta.setup({
 })
 ```
 
-## Keymaps
+## Keymaps and actions
 
 ### Defaults
 `delta.nvim` intentionally ships with a very small default keymap set. Keymaps tend to be highly personal, and many users already have their own conventions, leader-based layouts, or other mapping systems. Delta tries to provide the actions and a few sensible defaults, while leaving the final keymap design to you.
@@ -297,12 +297,40 @@ close = {
 }
 ```
 
+### Custom actions
+
+An action is just a `fun(ctx)` that receives an action context (`delta.picker.ActionContext` or `delta.spotlight.ActionContext`). The built-ins in `require("delta").picker.actions` and `require("delta").spotlight.actions` are composable: you can wrap any of them in your own function to add pre- or post-hooks, and still bind it like a normal action.
+
+```lua
+local actions = require("delta").picker.actions
+
+local function open_with_hook(action)
+    ---@param ctx delta.picker.ActionContext
+    return function(ctx)
+        -- pre-hook
+        action(ctx)
+        -- post-hook
+    end
+end
+
+require("delta").setup({
+    picker = {
+        actions = {
+            open        = { "<CR>",  open_with_hook(actions.open) },
+            open_vsplit = { "<C-v>", open_with_hook(actions.open_vsplit) },
+        },
+    },
+})
+```
+
 ## Picker
 
 <img width="462" height="500" alt="Delta Picker" src="https://github.com/user-attachments/assets/3c0bc900-6f84-4e18-b527-a855d1b15a04" />
 
 
 The picker shows git-changed files in a tree, split into unstaged and staged sections. You can filter by typing, open files, switch sources, preview files, stage/unstage/reset files or directories.
+
+The picker prompt buffer uses the `delta-input` filetype. You can target it from your own config however you need.
 
 ### Default picker keys
 
@@ -536,6 +564,33 @@ require("delta").setup({
 
 <img width="1020" height="197" alt="Delta diff popup" src="https://github.com/user-attachments/assets/26768755-e06c-469b-8077-7eb72b0f434d" />
 
+
+## Tips
+
+### Disable spotlight before saving a session
+
+Spotlight modifies buffer folds and window state that should not be persisted across sessions. If you use a session manager (`resession.nvim`, `persistence.nvim`, plain `:mksession`, ...), disable spotlight on the pre-save hook:
+
+```lua
+vim.api.nvim_create_autocmd("User", {
+    pattern = "PersistenceSavePre", -- or your session manager's equivalent
+    callback = function()
+        require("delta").spotlight.disable_all()
+    end,
+})
+```
+
+### Review workflow
+
+This is already mentioned in the configuration section, but it's worth a dedicated tip. If you use delta primarily to walk through changes file-by-file, the `reopen_picker_after_stage` option turns the picker + spotlight into a focused review loop: open the picker, land on a spotlighted file, stage hunks or the whole file, and the picker automatically reopens with the next unstaged file preselected.
+
+```lua
+require("delta").setup({
+    spotlight = {
+        reopen_picker_after_stage = true,
+    },
+})
+```
 
 ## Commands
 
