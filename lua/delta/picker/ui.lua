@@ -84,10 +84,10 @@ local function collect_unstaged_paths()
     end
 
     local paths = {}
-    local index = 0
-    for _, file in ipairs(state.unstaged) do
-        index = index + 1
-        paths[index] = file.path
+    for _, node in ipairs(state.nodes) do
+        if node and not node.is_dir and node.section == "unstaged" then
+            paths[#paths + 1] = node.path
+        end
     end
     return paths
 end
