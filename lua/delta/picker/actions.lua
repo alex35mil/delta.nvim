@@ -120,6 +120,15 @@ function M.toggle_preview(ctx)
     ctx.toggle_preview()
 end
 
+--- Scroll horizontally by a number of columns.
+---@param step number
+---@return delta.picker.ActionHandler
+function M.scroll_horizontal(step)
+    return function(ctx)
+        ctx.scroll_horizontal(step)
+    end
+end
+
 --- Scroll the preview pane by a number of lines.
 ---@param step number
 ---@return delta.picker.ActionHandler

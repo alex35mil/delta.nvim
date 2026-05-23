@@ -19,6 +19,7 @@ local Actions = require("delta.picker.actions")
 ---@field toggle_stage fun(cb?: fun()): boolean Toggle staged/unstaged for current entry (refreshes view)
 ---@field reset fun(cb?: fun()): boolean Reset current entry to its section baseline
 ---@field toggle_preview fun() Toggle the preview pane
+---@field scroll_horizontal fun(step: number) Scroll horizontally by a number of columns
 ---@field scroll_preview fun(step: number) Scroll the preview by step lines
 ---@field open fun(opts?: delta.picker.OpenOpts): boolean Close picker and open current file (no-op on dirs/nil)
 ---@field close fun() Close the picker
@@ -133,6 +134,8 @@ local defaults = {
         spotlight = { "<M-CR>", Actions.spotlight },
         move_up = { { { "k", modes = "n" }, "<Up>" }, Actions.move(-1) },
         move_down = { { { "j", modes = "n" }, "<Down>" }, Actions.move(1) },
+        scroll_left = { { "zh", modes = "n" }, Actions.scroll_horizontal(-8) },
+        scroll_right = { { "zl", modes = "n" }, Actions.scroll_horizontal(8) },
         toggle_preview = { "<C-p>", Actions.toggle_preview },
         cycle_source = { "<Tab>", Actions.cycle_source },
         cycle_source_back = { "<S-Tab>", Actions.cycle_source_back },

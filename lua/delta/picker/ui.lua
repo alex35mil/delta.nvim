@@ -54,6 +54,7 @@ local sections = {
 ---@field section_lines table<number, boolean>
 ---@field staged_start number index in nodes where staged section begins (0 if no staged)
 ---@field cursor_idx number 1-indexed selected line in tree
+---@field tree_leftcol number horizontal scroll offset for tree window
 ---@field collapsed table<string, boolean> set of collapsed directory paths
 ---@field origin_win delta.WinId window that was active when picker opened
 ---@field sources (delta.SourceConfig|delta.SourceDef)[] ordered list of sources to cycle through
@@ -664,6 +665,48 @@ local function resize_layout()
     end
 end
 
+--- Get the maximum horizontal scroll offset for the tree window.
+---@return number
+local function max_tree_leftcol()
+    if not state or not vim.api.nvim_win_is_valid(state.tree_win) then
+        return 0
+    end
+
+    local max_width = 0
+    local lines = vim.api.nvim_buf_get_lines(state.tree_buf, 0, -1, false)
+    for _, line in ipairs(lines) do
+        max_width = math.max(max_width, vim.fn.strdisplaywidth(line))
+    end
+
+    return math.max(0, max_width - vim.api.nvim_win_get_width(state.tree_win) + 1) -- 1 is a pad
+end
+
+--- Set the horizontal scroll offset for the tree window.
+---@param leftcol number
+local function set_tree_leftcol(leftcol)
+    if not state or not vim.api.nvim_win_is_valid(state.tree_win) then
+        return
+    end
+
+    leftcol = math.max(0, math.min(leftcol, max_tree_leftcol()))
+    state.tree_leftcol = leftcol
+
+    vim.api.nvim_win_call(state.tree_win, function()
+        local view = vim.fn.winsaveview()
+        view.leftcol = leftcol
+        vim.fn.winrestview(view)
+    end)
+end
+
+--- Scroll the tree horizontally by columns.
+---@param cols number
+local function scroll_horizontal(cols)
+    if not state then
+        return
+    end
+    set_tree_leftcol((state.tree_leftcol or 0) + cols)
+end
+
 --- Update the visual cursor line in the tree window.
 local function update_cursor_highlight()
     if not state or #state.nodes == 0 then
@@ -683,6 +726,7 @@ local function update_cursor_highlight()
         })
         if vim.api.nvim_win_is_valid(state.tree_win) then
             vim.api.nvim_win_set_cursor(state.tree_win, { idx, 0 })
+            set_tree_leftcol(state.tree_leftcol or 0)
         end
     end
 
@@ -799,6 +843,7 @@ local function render()
         local ns = vim.api.nvim_create_namespace("delta")
         vim.api.nvim_buf_clear_namespace(state.tree_buf, ns, 0, -1)
         vim.api.nvim_buf_set_extmark(state.tree_buf, ns, 0, 0, { end_row = 1, hl_group = hl.empty })
+        set_tree_leftcol(0)
         vim.api.nvim_buf_clear_namespace(state.tree_buf, vim.api.nvim_create_namespace("delta-branch"), 0, -1)
         vim.api.nvim_buf_clear_namespace(state.tree_buf, vim.api.nvim_create_namespace("delta-cursor"), 0, -1)
         return
@@ -838,6 +883,7 @@ local function render()
         vim.api.nvim_buf_set_extmark(state.tree_buf, ns, h.line, h.col, mark_opts)
     end
 
+    set_tree_leftcol(state.tree_leftcol or 0)
     update_cursor_highlight()
     highlight_branch()
 end
@@ -1139,6 +1185,9 @@ local function make_context()
                 show_preview()
             end
         end,
+        scroll_horizontal = function(step)
+            scroll_horizontal(step)
+        end,
         scroll_preview = function(step)
             Preview.scroll(step)
         end,
@@ -1264,6 +1313,7 @@ local function create_float()
     })
 
     vim.wo[tree_win].cursorline = false
+    vim.wo[tree_win].wrap = false
     vim.wo[tree_win].winhighlight = "NormalFloat:" .. hl.dialog .. ",FloatBorder:" .. hl.border
 
     -- Keymaps: bind all actions + arrow key aliases.
@@ -1380,6 +1430,7 @@ function M.show(opts)
         staged_start = 0,
         collapsed = {},
         cursor_idx = 1,
+        tree_leftcol = 0,
         sources = sources,
         source_keys = source_keys,
         source_idx = source_idx,

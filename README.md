@@ -172,6 +172,8 @@ delta.setup({
             spotlight = { "<M-CR>", picker.actions.spotlight },
             move_up = { { { "k", modes = "n" }, "<Up>" }, picker.actions.move(-1) },
             move_down = { { { "j", modes = "n" }, "<Down>" }, picker.actions.move(1) },
+            scroll_left = { { "zh", modes = "n" }, picker.actions.scroll_horizontal(-8) },
+            scroll_right = { { "zl", modes = "n" }, picker.actions.scroll_horizontal(8) },
             toggle_preview = { "<C-p>", picker.actions.toggle_preview },
             cycle_source = { "<Tab>", picker.actions.cycle_source },
             cycle_source_back = { "<S-Tab>", picker.actions.cycle_source_back },
@@ -338,6 +340,7 @@ The picker prompt buffer uses the `delta-input` filetype. You can target it from
 | --- | --- |
 | `k` / `<Up>` | Move selection up |
 | `j` / `<Down>` | Move selection down |
+| `zh` / `zl` | Scroll picker tree horizontally in normal mode |
 | `<CR>` | Open file, or expand/collapse directory |
 | `<C-p>` | Toggle preview |
 | `<Tab>` | Cycle to next source |
@@ -366,6 +369,7 @@ Available built-ins:
 - `cycle_source` — Switch to the next configured picker source.
 - `cycle_source_back` — Switch to the previous configured picker source.
 - `toggle_preview` — Show or hide the preview pane.
+- `scroll_horizontal(step)` — Scroll the picker horizontally by `step` columns.
 - `scroll_preview(step)` — Scroll the preview pane by `step` lines.
 - `close` — Close the picker.
 
@@ -390,6 +394,7 @@ Every action receives context object as an argument:
 ---@field toggle_stage fun(cb?: fun()): boolean
 ---@field reset fun(cb?: fun()): boolean
 ---@field toggle_preview fun()
+---@field scroll_horizontal fun(step: number)
 ---@field scroll_preview fun(step: number)
 ---@field open fun(opts?: delta.picker.OpenOpts): boolean
 ---@field close fun()
