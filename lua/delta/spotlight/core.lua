@@ -988,6 +988,35 @@ local function visible_hunks_from_lines(base_lines, current_lines, contiguous)
     return visible
 end
 
+---@param hunk delta.Hunk
+---@return boolean
+local function is_no_nl_only_hunk(hunk)
+    if (hunk.removed.no_nl_at_eof or false) == (hunk.added.no_nl_at_eof or false) then
+        return false
+    end
+    if hunk.removed.count ~= hunk.added.count or #hunk.removed.lines ~= #hunk.added.lines then
+        return false
+    end
+
+    for i, line in ipairs(hunk.removed.lines) do
+        if hunk.added.lines[i] ~= line then
+            return false
+        end
+    end
+
+    return true
+end
+
+---@param hunks delta.Hunk[]
+---@param raw_hunks delta.Hunk[]
+local function append_no_nl_only_hunks(hunks, raw_hunks)
+    for _, hunk in ipairs(raw_hunks or {}) do
+        if is_no_nl_only_hunk(hunk) then
+            hunks[#hunks + 1] = hunk
+        end
+    end
+end
+
 ---@param path string
 ---@param source_bufid? delta.BufId
 ---@return string[]?
@@ -1045,6 +1074,8 @@ local function fetch_file_data(path, source_bufid)
     end
     visible_hunks.unstaged = visible_hunks_from_lines(index_lines, current_lines)
     action_hunks.unstaged = visible_hunks_from_lines(index_lines, current_lines, true)
+    append_no_nl_only_hunks(visible_hunks.unstaged, raw_hunks.unstaged)
+    append_no_nl_only_hunks(action_hunks.unstaged, raw_hunks.unstaged)
 
     local ok_head, head_lines = Git.get_head_lines(path)
     if not ok_head or not head_lines then
@@ -1052,6 +1083,8 @@ local function fetch_file_data(path, source_bufid)
     end
     visible_hunks.staged = visible_hunks_from_lines(head_lines, index_lines)
     action_hunks.staged = visible_hunks_from_lines(head_lines, index_lines, true)
+    append_no_nl_only_hunks(visible_hunks.staged, raw_hunks.staged)
+    append_no_nl_only_hunks(action_hunks.staged, raw_hunks.staged)
 
     return true,
         {
