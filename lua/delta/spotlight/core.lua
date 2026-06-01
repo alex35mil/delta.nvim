@@ -94,6 +94,7 @@ local wins = {}
 ---@field raw_hunks delta.Hunks Cached raw git patch hunks for the source path.
 ---@field visible_hunks delta.Hunks Cached linematch-visible hunks for spotlight UI resolution/navigation.
 ---@field action_hunks delta.Hunks Cached contiguous full-text hunks for stage/reset target resolution.
+---@field dirty? boolean True when cached git state may be stale after an index watcher event.
 ---@field picker_nav? delta.spotlight.PickerNav Picker navigation metadata associated with the source path.
 
 ---@class delta.spotlight.FileData
@@ -1164,6 +1165,7 @@ local function refresh_file_state(path, source_bufid)
                 raw_hunks = file_data.raw_hunks,
                 visible_hunks = file_data.visible_hunks,
                 action_hunks = file_data.action_hunks,
+                dirty = false,
                 picker_nav = current and current.picker_nav or nil,
             }
 
@@ -1750,7 +1752,28 @@ local function setup_autocmds()
                 Git.async(function()
                     local current_bufid = vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_buf(winid) or -1
                     local current_path = current_bufid ~= -1 and path_for_buf(current_bufid) or nil
-                    local display = ensure_window_buf(winid, bufid, file, win.resolved_mode)
+                    if current_path ~= path then
+                        return
+                    end
+
+                    local active_file = file
+                    local mfile = as_managed_file(active_file)
+                    if mfile and mfile.dirty then
+                        if not refreshing_file_state_locks:acquire(path) then
+                            return
+                        end
+                        local ok = refresh_file_state(path, scratch and nil or bufid)
+                        refreshing_file_state_locks:release(path)
+                        if not ok or not files[path] then
+                            return
+                        end
+                        active_file = files[path]
+                    end
+
+                    sync_picker_context(winid, bufid)
+                    win.resolved_mode = resolve_mode_for_file(active_file, win.requested_mode, win.picker_override)
+
+                    local display = ensure_window_buf(winid, bufid, active_file, win.resolved_mode)
                     if not display then
                         return
                     end
@@ -2030,44 +2053,111 @@ local function setup_autocmds()
     })
 end
 
---- Register git index watcher callback to refresh all buffer states and re-render spotlight windows.
+---@param path delta.FilePath
+---@param mfile delta.spotlight.ManagedFileState
+---@param source_bufid? delta.BufId
+---@return boolean ok
+local function refresh_managed_file_data(path, mfile, source_bufid)
+    local ok, file_data = fetch_file_data(mfile.path, source_bufid)
+
+    if ok and file_data then
+        mfile.status = file_data.status
+        mfile.raw_hunks = file_data.raw_hunks
+        mfile.visible_hunks = file_data.visible_hunks
+        mfile.action_hunks = file_data.action_hunks
+        mfile.dirty = false
+        return true
+    end
+
+    if refresh_file_state(path, source_bufid) then
+        local refreshed = as_managed_file(files[path])
+        if refreshed then
+            refreshed.dirty = false
+        end
+        return true
+    end
+
+    return false
+end
+
+---@return table<delta.FilePath, delta.BufId|false>
+local function active_refresh_paths()
+    local paths = {}
+
+    local current_bufid = vim.api.nvim_get_current_buf()
+    local current, _, current_scratch = file_and_path_for_buf(current_bufid)
+    current = as_managed_file(current)
+    if current then
+        paths[current.path] = current_scratch and false
+            or (current.bufs.source and current.bufs.source.buf or current_bufid)
+    end
+
+    for winid, _ in pairs(wins) do
+        if vim.api.nvim_win_is_valid(winid) then
+            local winbufid = vim.api.nvim_win_get_buf(winid)
+            local mfile = as_managed_file(file_for_buf(winbufid))
+            if mfile then
+                paths[mfile.path] = (mfile.bufs.source and mfile.bufs.source.buf) or false
+            end
+        end
+    end
+    return paths
+end
+
+---@type fun()|nil
+local watcher_callback = nil
+
+--- Register git index watcher callback to refresh visible spotlight windows and mark cached states stale.
 local function setup_watcher()
-    Watchers.on_update(function()
+    if watcher_callback then
+        Watchers.off_update(watcher_callback)
+    end
+
+    watcher_callback = function()
         Git.async(function()
-            for path, file in pairs(files) do
+            -- Avoid O(reviewed files) git refreshes after each stage/unstage; inactive files refresh lazily.
+            for _, file in pairs(files) do
                 local mfile = as_managed_file(file)
                 if mfile then
-                    local source_bufid = mfile.bufs.source and mfile.bufs.source.buf or nil
-                    local ok, file_data = fetch_file_data(mfile.path, source_bufid)
+                    mfile.dirty = true
+                end
+            end
 
-                    if ok and file_data then
-                        mfile.status = file_data.status
-                        mfile.raw_hunks = file_data.raw_hunks
-                        mfile.visible_hunks = file_data.visible_hunks
-                        mfile.action_hunks = file_data.action_hunks
-                    else
-                        refresh_file_state(path)
-                    end
+            for path, source_bufid in pairs(active_refresh_paths()) do
+                local mfile = as_managed_file(files[path])
+                if mfile then
+                    refresh_managed_file_data(path, mfile, source_bufid ~= false and source_bufid or nil)
                 end
             end
 
             for winid, win in pairs(wins) do
                 if vim.api.nvim_win_is_valid(winid) then
                     local winbufid = vim.api.nvim_win_get_buf(winid)
-                    local file = file_for_buf(winbufid)
-                    if file then
-                        sync_picker_context(winid, winbufid)
-                        win.resolved_mode = resolve_mode_for_file(file, win.requested_mode, win.picker_override)
+                    local mfile = as_managed_file(file_for_buf(winbufid))
+                    if mfile then
+                        if mfile.dirty then
+                            local source_bufid = mfile.bufs.source and mfile.bufs.source.buf or nil
+                            local path = mfile.path
+                            refresh_managed_file_data(path, mfile, source_bufid)
+                            mfile = as_managed_file(files[path])
+                        end
 
-                        local display = ensure_window_buf(winid, winbufid, file, win.resolved_mode)
-                        if display then
-                            render(winid, display.buf, { cursor = "nearest", trigger = "fn:watcher" })
+                        if mfile and vim.api.nvim_win_get_buf(winid) == winbufid then
+                            sync_picker_context(winid, winbufid)
+                            win.resolved_mode = resolve_mode_for_file(mfile, win.requested_mode, win.picker_override)
+
+                            local display = ensure_window_buf(winid, winbufid, mfile, win.resolved_mode)
+                            if display then
+                                render(winid, display.buf, { cursor = "keep", trigger = "fn:watcher" })
+                            end
                         end
                     end
                 end
             end
         end)
-    end)
+    end
+
+    Watchers.on_update(watcher_callback)
 end
 
 --- Global Spotlight setup
