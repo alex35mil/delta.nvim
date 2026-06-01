@@ -263,9 +263,9 @@ local function parse_porcelain_z(output)
         local y = record:sub(2, 2)
         local path = record:sub(4)
 
-        -- Renames/copies in -z mode are emitted as: "XY oldpath\0newpath\0".
+        -- Renames/copies in porcelain v1 -z mode are emitted as: "XY newpath\0oldpath\0".
+        -- Keep the new path for UI/actions and skip the old path record.
         if x == "R" or x == "C" then
-            path = records[i + 1] or path
             i = i + 1
         end
 
