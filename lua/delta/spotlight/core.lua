@@ -3103,17 +3103,50 @@ local function jump_to_next_hunk_after_stage_toggle(winid, bufid, file, line)
         return
     end
 
+    local target = hunks[1]:target(side)
     for _, hunk in ipairs(hunks) do
         local hunk_line = hunk:target(side)
         if hunk_line > line then
-            vim.api.nvim_win_set_cursor(winid, { hunk_line, 0 })
-            vim.cmd("normal! zz")
-            return
+            target = hunk_line
+            break
         end
     end
 
-    vim.api.nvim_win_set_cursor(winid, { hunks[1]:target(side), 0 })
-    vim.cmd("normal! zz")
+    vim.api.nvim_win_set_cursor(winid, { target, 0 })
+    rerender_folds(winid)
+    vim.api.nvim_win_call(winid, function()
+        vim.cmd("normal! zz")
+    end)
+end
+
+---@param path delta.FilePath
+---@param source_bufid? delta.BufId
+---@return boolean rendered
+local function render_path_after_hunk_mutation(path, source_bufid)
+    local mfile = as_managed_file(files[path])
+    if not mfile or not refresh_managed_file_data(path, mfile, source_bufid) then
+        return false
+    end
+
+    local rendered = false
+    for wid, win in pairs(wins) do
+        if vim.api.nvim_win_is_valid(wid) then
+            local winbufid = vim.api.nvim_win_get_buf(wid)
+            local winfile = as_managed_file(file_for_buf(winbufid))
+            if winfile and winfile.path == path then
+                sync_picker_context(wid, winbufid)
+                win.resolved_mode = resolve_mode_for_file(winfile, win.requested_mode, win.picker_override)
+
+                local display = ensure_window_buf(wid, winbufid, winfile, win.resolved_mode)
+                if display then
+                    render(wid, display.buf, { cursor = "keep", trigger = "fn:hunk_mutation" })
+                    rendered = true
+                end
+            end
+        end
+    end
+
+    return rendered
 end
 
 ---@param bufid delta.BufId
@@ -3261,11 +3294,19 @@ function M.toggle_stage_hunk(bufid, start_line, end_line, cb)
                     if partial_selection then
                         vim.api.nvim_win_call(wid, exit_visual_mode)
                     end
-                    jump_to_next_hunk_after_stage_toggle(wid, bid, current_file, cursor_line)
+                    jump_to_next_hunk_after_stage_toggle(
+                        wid,
+                        bid,
+                        as_managed_file(files[path]) or current_file,
+                        cursor_line
+                    )
                     if cb then
                         cb()
                     end
                 end)
+                if registered then
+                    render_path_after_hunk_mutation(path, source_bufid)
+                end
                 if not registered and cb then
                     cb()
                 end
@@ -3392,11 +3433,19 @@ function M.reset_hunk(bufid, start_line, end_line, cb)
                     if partial_selection then
                         vim.api.nvim_win_call(wid, exit_visual_mode)
                     end
-                    jump_to_next_hunk_after_stage_toggle(wid, bid, current_file, cursor_line)
+                    jump_to_next_hunk_after_stage_toggle(
+                        wid,
+                        bid,
+                        as_managed_file(files[path]) or current_file,
+                        cursor_line
+                    )
                     if cb then
                         cb()
                     end
                 end)
+                if registered then
+                    render_path_after_hunk_mutation(path, source_bufid)
+                end
                 if not registered and cb then
                     cb()
                 end
