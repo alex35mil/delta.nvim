@@ -55,30 +55,6 @@ end
 
 ---@alias delta.spotlight.StatusConfig table<delta.spotlight.StatusKey, delta.spotlight.StatusEntry>
 
----@alias delta.spotlight.DiffMode "auto"|"inline"|"side-by-side"
-
----@class delta.spotlight.DiffKeysConfig
----@field scroll_up? delta.KeySpecs
----@field scroll_down? delta.KeySpecs
----@field focus_left? delta.KeySpecs
----@field focus_right? delta.KeySpecs
----@field close? delta.KeySpecs
-
----@class delta.spotlight.DiffLayoutConfig
----@field border string
----@field max_width? integer
----@field max_height? integer
----@field zindex integer
----@field focusable boolean
----@field follow_scroll boolean
----@field min_side_by_side_width integer
----@field scroll_step integer
-
----@class delta.spotlight.DiffConfig
----@field mode delta.spotlight.DiffMode
----@field layout delta.spotlight.DiffLayoutConfig
----@field keys delta.spotlight.DiffKeysConfig
-
 ---@class delta.SpotlightConfig
 ---@field context delta.spotlight.ContextConfig
 ---@field title string Winbar title
@@ -86,7 +62,6 @@ end
 ---@field autosave_before_stage boolean Save modified buffers automatically before hunk stage/unstage
 ---@field reopen_picker_after_stage boolean Reopen picker on next unstaged file after staging a file completely
 ---@field actions table<string, delta.spotlight.ActionEntry>
----@field diff delta.spotlight.DiffConfig
 
 ---@type delta.SpotlightConfig
 local defaults = {
@@ -114,26 +89,6 @@ local defaults = {
         shrink_context = { "-", Actions.shrink_context },
         cycle_mode = { "m", Actions.cycle_mode },
         exit = { "q", Actions.exit },
-    },
-    diff = {
-        mode = "auto",
-        layout = {
-            border = "rounded",
-            max_width = nil,
-            max_height = nil,
-            zindex = 50,
-            focusable = true,
-            follow_scroll = true,
-            min_side_by_side_width = 120,
-            scroll_step = 4,
-        },
-        keys = {
-            scroll_up = nil,
-            scroll_down = nil,
-            focus_left = "<Tab>",
-            focus_right = "<Tab>",
-            close = "<Esc>",
-        },
     },
 }
 

@@ -1,5 +1,5 @@
 --- Configuration for delta.nvim.
---- Merges picker and spotlight defaults.
+--- Merges diff, picker, and spotlight defaults.
 
 ---@class delta.GitStatusIcons
 ---@field modified string
@@ -20,6 +20,7 @@
 ---@class delta.Options
 ---@field git delta.GitConfig
 ---@field reset delta.ResetConfig
+---@field diff delta.DiffConfig
 ---@field picker delta.PickerConfig
 ---@field spotlight delta.SpotlightConfig
 
@@ -44,6 +45,7 @@ local defaults = {
     reset = {
         confirm = true,
     },
+    diff = require("delta.diff.config"),
     picker = require("delta.picker.config"),
     spotlight = require("delta.spotlight.config"),
 }
@@ -61,9 +63,30 @@ local function override_actions(merged, user)
 end
 
 ---@param opts? delta.Options
+local function validate_migrations(opts)
+    if not opts then
+        return
+    end
+    if opts.spotlight and opts.spotlight.diff ~= nil then
+        error("delta.nvim: spotlight.diff moved to diff.hunk", 3)
+    end
+    if opts.diff and opts.diff.keys ~= nil then
+        error("delta.nvim: diff.keys moved to diff.file.keys", 3)
+    end
+    if opts.spotlight and opts.spotlight.actions and opts.spotlight.actions.open_diff ~= nil then
+        error("delta.nvim: spotlight.actions.open_diff moved to diff.actions.open_hunk_diff", 3)
+    end
+end
+
+---@param opts? delta.Options
 function M.setup(opts)
+    validate_migrations(opts)
+
     M.options = vim.tbl_deep_extend("force", {}, defaults, opts or {})
     if opts then
+        if opts.diff and opts.diff.actions then
+            override_actions(M.options.diff.actions, opts.diff.actions)
+        end
         if opts.picker and opts.picker.actions then
             override_actions(M.options.picker.actions, opts.picker.actions)
         end

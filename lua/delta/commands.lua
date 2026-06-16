@@ -29,6 +29,16 @@ function M.setup()
     vim.api.nvim_create_user_command("DeltaSpotlightDisableAll", function()
         require("delta.spotlight").disable_all()
     end, { desc = "Disable delta spotlight on all buffers" })
+
+    vim.api.nvim_create_user_command("DeltaFileDiff", function(cmd)
+        require("delta.diff").open_file({ mode = cmd.args ~= "" and cmd.args or nil })
+    end, {
+        nargs = "?",
+        complete = function()
+            return { "auto", "unstaged", "staged" }
+        end,
+        desc = "Open a side-by-side diff tab for the current file",
+    })
 end
 
 return M

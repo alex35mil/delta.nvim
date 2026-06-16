@@ -81,7 +81,7 @@ Use:
 
 ## Configuration
 
-Top-level configuration is split into `git`, `reset`, `picker`, and `spotlight` sections.
+Top-level configuration is split into `git`, `reset`, `diff`, `picker`, and `spotlight` sections.
 
 All options are optional. These are the defaults:
 
@@ -109,6 +109,64 @@ delta.setup({
     reset = {
         -- Ask for confirmation before file reset operations.
         confirm = true,
+    },
+
+    diff = {
+        file = {
+            context = {
+                -- Initial native diff context lines; nil uses current 'diffopt'.
+                base = nil,
+                -- Lines added/removed by expand/shrink actions.
+                step = 5,
+            },
+            keys = {
+                -- Optional keymaps inside side-by-side file diff tabs.
+                -- nil leaves them unset.
+                expand_context = "+",
+                shrink_context = "-",
+                toggle_stage_file = nil,
+                toggle_stage_file_and_close = nil,
+                reset_file = nil,
+                reset_file_and_close = nil,
+                close = nil,
+            },
+        },
+        hunk = {
+            -- Hunk popup diff rendering mode: "auto"|"inline"|"side-by-side"
+            -- "auto" prefers side-by-side when there is enough editor width and the popup fits,
+            -- otherwise it falls back to inline.
+            mode = "auto",
+            layout = {
+                border = "rounded",
+                -- Max popup size; nil means computed automatically.
+                max_width = nil,
+                max_height = nil,
+                zindex = 50,
+                -- Whether popup windows can receive focus.
+                focusable = true,
+                -- Keep popup anchored to hunk while scrolling.
+                follow_scroll = true,
+                -- Minimum editor width before side-by-side mode is allowed.
+                min_side_by_side_width = 120,
+                -- Scroll amount used by popup scroll keymaps.
+                scroll_step = 4,
+            },
+            keys = {
+                -- Optional popup-local keymaps; nil leaves them unset.
+                -- If no modes are provided, `n` + `v` is the default.
+                -- You can set multiple keymaps for the same actions. See Keymaps section below.
+                scroll_up = nil,
+                scroll_down = nil,
+                focus_left = "<Tab>",
+                focus_right = "<Tab>",
+                close = "<Esc>",
+            },
+        },
+        -- Optional global diff-opening actions.
+        actions = {
+            -- open_hunk_diff = { { "gd", modes = "n" }, delta.diff.actions.open_hunk_diff },
+            -- open_file_diff = { { "gD", modes = "n" }, delta.diff.actions.open_file_diff },
+        },
     },
 
     picker = {
@@ -221,38 +279,6 @@ delta.setup({
             cycle_mode = { "m", spotlight.actions.cycle_mode },
             exit = { "q", spotlight.actions.exit },
         },
-        -- Popup diffs.
-        diff = {
-            -- Popup diff rendering mode: "auto"|"inline"|"side-by-side"
-            -- "auto" prefers side-by-side when there is enough editor width and the popup fits,
-            -- otherwise it falls back to inline.
-            mode = "auto",
-            layout = {
-                border = "rounded",
-                -- Max popup size; nil means computed automatically.
-                max_width = nil,
-                max_height = nil,
-                zindex = 50,
-                -- Whether popup windows can receive focus.
-                focusable = true,
-                -- Keep popup anchored to hunk while scrolling.
-                follow_scroll = true,
-                -- Minimum editor width before side-by-side mode is allowed.
-                min_side_by_side_width = 120,
-                -- Scroll amount used by popup scroll keymaps.
-                scroll_step = 4,
-            },
-            keys = {
-                -- Optional popup-local keymaps; nil leaves them unset.
-                -- If no modes are provided, `n` + `v` is the default.
-                -- You can set multiple keymaps for the same actions. See Keymaps section below.
-                scroll_up = nil,
-                scroll_down = nil,
-                focus_left = "<Tab>",
-                focus_right = "<Tab>",
-                close = "<Esc>",
-            },
-        },
     },
 })
 ```
@@ -263,7 +289,7 @@ delta.setup({
 `delta.nvim` intentionally ships with a very small default keymap set. Keymaps tend to be highly personal, and many users already have their own conventions, leader-based layouts, or other mapping systems. Delta tries to provide the actions and a few sensible defaults, while leaving the final keymap design to you.
 
 ### Structure of keymaps actions
-Both `picker.actions` and `spotlight.actions` are configured as named entries of the form:
+`picker.actions`, `spotlight.actions`, and `diff.actions` are configured as named entries of the form:
 
 ```lua
 name = { lhs, handler }
@@ -273,7 +299,7 @@ Where:
 
 - `name` is just your config key; it does not need to match a built-in action name and can be anything
 - `lhs` is a key or key spec
-- `handler` is usually one of the functions from `require("delta").picker.actions` or `require("delta").spotlight.actions`
+- `handler` is usually one of the functions from `require("delta").picker.actions`, `require("delta").spotlight.actions`, or `require("delta").diff.actions`
 
 Basic example:
 
@@ -301,7 +327,7 @@ close = {
 
 ### Custom actions
 
-An action is just a `fun(ctx)` that receives an action context (`delta.picker.ActionContext` or `delta.spotlight.ActionContext`). The built-ins in `require("delta").picker.actions` and `require("delta").spotlight.actions` are composable: you can wrap any of them in your own function to add pre- or post-hooks, and still bind it like a normal action.
+An action is just a `fun(ctx)` that receives an action context (`delta.picker.ActionContext`, `delta.spotlight.ActionContext`, or `delta.diff.ActionContext`). The built-ins in `require("delta").picker.actions`, `require("delta").spotlight.actions`, and `require("delta").diff.actions` are composable: you can wrap any of them in your own function to add pre- or post-hooks, and still bind it like a normal action.
 
 ```lua
 local actions = require("delta").picker.actions
@@ -503,7 +529,6 @@ Available built-ins:
 - `toggle_stage_hunk_and(cb)` — Run `toggle_stage_hunk`, then call `cb()` on success.
 - `reset_hunk` — Reset the unstaged hunk under the cursor, or the visual selection.
 - `reset_hunk_and(cb)` — Run `reset_hunk`, then call `cb()` on success.
-- `open_diff` — Open the diff popup for the hunk under the cursor.
 - `exit` — Disable spotlight for the current buffer/window.
 
 #### Global actions
@@ -543,7 +568,7 @@ Every action receives context object as an argument:
 ---@field exit fun()
 ```
 
-### Example: add hunk navigation, reset, and diff popup
+### Example: add hunk navigation and reset
 
 ```lua
 local actions = require("delta").spotlight.actions
@@ -557,30 +582,68 @@ require("delta").setup({
             reset_file = { { "R", modes = "n" }, actions.reset_file },
             toggle_stage_hunk = { { "<CR>", modes = "n" }, actions.toggle_stage_hunk },
             reset_hunk = { { "gR", modes = { "n", "v" } }, actions.reset_hunk },
-            open_diff = { { "gd", modes = "n" }, actions.open_diff, global = true },
         },
     },
 })
 ```
 
-### Diff popup
+## Diff
 
-`spotlight.actions.open_diff` opens a popup for the hunk under the cursor so you can inspect the detailed diff.
+Built-in diff actions live in `require("delta").diff.actions`.
+
+Available built-ins:
+
+- `open_file_diff` — Open a side-by-side diff tab for the current file.
+- `open_hunk_diff` — Open the diff popup for the hunk under the cursor.
+
+### Hunk diff popup
+
+`require("delta").diff.open_hunk()` opens a popup for the hunk under the cursor so you can inspect the detailed diff.
 
 <img width="1020" height="197" alt="Delta diff popup" src="https://github.com/user-attachments/assets/26768755-e06c-469b-8077-7eb72b0f434d" />
+
+### Side-by-side file diff
+
+`require("delta").diff.open_file()` opens the current file in a new native diff tab. `auto` mode shows unstaged changes first, then staged changes. Configure `diff.file.keys` for tab-local actions: close, stage/unstage file, reset file, and expand/shrink native diff context.
+
+```lua
+local diff_actions = require("delta").diff.actions
+
+require("delta").setup({
+    diff = {
+        file = {
+            keys = {
+                expand_context = "+",
+                shrink_context = "-",
+                toggle_stage_file = "_",
+                toggle_stage_file_and_close = "<CR>",
+                reset_file = "R",
+                reset_file_and_close = "gR",
+                close = "q",
+            },
+        },
+        actions = {
+            open_hunk_diff = { { "gd", modes = "n" }, diff_actions.open_hunk_diff },
+            open_file_diff = { { "gD", modes = "n" }, diff_actions.open_file_diff },
+        },
+    },
+})
+```
 
 
 ## Tips
 
-### Disable spotlight before saving a session
+### Disable delta UI before saving a session
 
-Spotlight modifies buffer folds and window state that should not be persisted across sessions. If you use a session manager (`resession.nvim`, `persistence.nvim`, plain `:mksession`, ...), disable spotlight on the pre-save hook:
+Spotlight and file diff tabs modify folds, winbars, diff state, and temporary buffers that should not be persisted across sessions. If you use a session manager (`resession.nvim`, `persistence.nvim`, plain `:mksession`, ...), close them on the pre-save hook:
 
 ```lua
 vim.api.nvim_create_autocmd("User", {
     pattern = "PersistenceSavePre", -- or your session manager's equivalent
     callback = function()
-        require("delta").spotlight.disable_all()
+        local delta = require("delta")
+        delta.spotlight.disable_all()
+        delta.diff.close_all()
     end,
 })
 ```
@@ -604,8 +667,9 @@ require("delta").setup({
 | `:DeltaPicker [source]` | Toggle the picker, optionally opening a named source |
 | `:DeltaSpotlight [mode]` | Toggle spotlight for the current buffer |
 | `:DeltaSpotlightDisableAll` | Disable spotlight in all windows |
+| `:DeltaFileDiff [mode]` | Open a side-by-side diff tab for the current file |
 
-Spotlight modes accepted by `:DeltaSpotlight`:
+Modes accepted by `:DeltaSpotlight` and `:DeltaFileDiff`:
 
 - `auto`
 - `unstaged`
@@ -622,7 +686,33 @@ delta.setup(opts?)
 
 delta.picker
 delta.spotlight
+delta.diff
 ```
+
+### Diff API
+
+```lua
+local diff = require("delta").diff
+
+diff.open_hunk(opts?)
+diff.open_file(opts?)
+diff.close_file()
+diff.close_all()
+diff.actions.open_hunk_diff
+diff.actions.open_file_diff
+```
+
+`opts` for `open_file()`:
+
+```lua
+---@class delta.diff.FileOpenOpts
+---@field winid? integer
+---@field bufid? integer
+---@field path? string
+---@field mode? "auto"|"unstaged"|"staged"
+```
+
+`open_hunk()` uses the current window/buffer by default.
 
 ### Picker API
 
@@ -693,6 +783,15 @@ All highlight groups are defined with `default = true`, so they can be overridde
 | `DeltaPickerInactiveBranch` | `Comment` |
 | `DeltaPickerTreeConnector` | `NonText` |
 | `DeltaPickerEmpty` | `NonText` |
+
+### Diff
+
+| Group | Default |
+| --- | --- |
+| `DeltaDiffFileWinbar` | background from `Normal` |
+| `DeltaDiffFileWinbarBase` | background from `Comment`, bold |
+| `DeltaDiffFileWinbarCurrent` | background from `Title`, bold |
+| `DeltaDiffFileWinbarHint` | foreground from `Comment` |
 
 ### Spotlight
 

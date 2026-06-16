@@ -14,13 +14,14 @@ Use this skill when the user wants the agent to inspect staged changes, come up 
    - `git diff --cached --name-only`
    - focused `git diff --cached -- <files>` when needed
 2. Identify the dominant intent:
-   - `feat`, `fix`, `refactor`, `docs`, `test`, `chore`
-3. Prefer a specific scope when useful: `spotlight`, `picker`, `api`, `commands`, `config`, `tests`, `docs`.
+   - `feat`, `fix`, `style`, `refactor`, `docs`, `test`, `chore`
+3. Prefer a specific scope when useful: `spotlight`, `picker`, `diff`, `api`, `commands`, `config`, `tests`, `docs`.
 4. Write a concise Conventional Commit subject:
    - `type(scope): summary`
 5. Use `!` only for real breaking changes to public APIs, documented commands, config, keymaps, or user-configured action names.
-6. Add a short body only when it helps, especially for renames, removed options, or migration notes.
-7. Commit with `git commit`.
+6. For user-facing changes, ensure `CHANGELOG.md` has a lean dated entry before committing.
+7. Add a short body only when it helps, especially for renames, removed options, or migration notes.
+8. Commit with `git commit`.
 
 ## Repo Guidance
 
@@ -32,6 +33,25 @@ Good:
 - `refactor(git): split patch building into dedicated helpers`
 
 If the change is only an internal move, do not mark it breaking.
+
+## Changelog
+
+This repo treats `main` as released. Keep `CHANGELOG.md` manual and lean:
+
+```md
+# Changelog
+
+## YYYY-MM-DD
+
+- **TAG:** User-facing change.
+```
+
+Rules:
+- Add/update a date section for user-facing changes: config/API, commands, keymaps, documented behavior, compatibility, important fixes.
+- Use flat bullets only; no nested categories.
+- Tags: `**BREAKING:**`, `**ADDED:**`, `**CHANGED:**`, `**FIXED:**`, `**REMOVED:**`.
+- Do not add manual commit links; link issues/PRs only when they add useful context.
+- Skip changelog entries for purely internal refactors, style, or docs-only changes unless they affect users.
 
 ## Breaking Changes
 

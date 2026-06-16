@@ -17,6 +17,7 @@ local function setup_highlight_autocmds()
             require("delta.status").setup()
             require("delta.picker").setup()
             require("delta.spotlight").setup()
+            require("delta.diff.highlights").setup()
         end,
     })
 end
@@ -28,14 +29,15 @@ function M.setup(opts)
         Notify.warn("setup() called more than once, ignoring")
         return
     end
-    is_initialized = true
 
     Config.setup(opts)
     require("delta.status").setup()
     require("delta.picker").setup()
     require("delta.spotlight").setup()
+    require("delta.diff").setup()
     require("delta.commands").setup()
     setup_highlight_autocmds()
+    is_initialized = true
 end
 
 --- @type delta.Picker
@@ -43,5 +45,7 @@ M.picker = require("delta.picker")
 
 --- @type delta.Spotlight
 M.spotlight = require("delta.spotlight")
+
+M.diff = require("delta.diff")
 
 return M

@@ -7,7 +7,7 @@ local Paths = require("delta.spotlight.paths")
 local Keys = require("delta.spotlight.keys")
 local Highlights = require("delta.spotlight.highlights")
 
-local ns = vim.api.nvim_create_namespace("delta.spotlight.diff")
+local ns = vim.api.nvim_create_namespace("delta.diff.hunk")
 
 ---@class delta.spotlight.diff.Keymaps
 ---@field scroll_up? delta.KeySpec|delta.KeySpec[]
@@ -17,7 +17,7 @@ local ns = vim.api.nvim_create_namespace("delta.spotlight.diff")
 ---@field close? delta.KeySpec|delta.KeySpec[]
 
 ---@class delta.spotlight.diff.LayoutOpts
----@field mode delta.spotlight.DiffMode
+---@field mode delta.diff.HunkMode
 ---@field border string
 ---@field max_width integer
 ---@field max_height integer
@@ -82,7 +82,7 @@ local ns = vim.api.nvim_create_namespace("delta.spotlight.diff")
 ---@field zindex? integer
 ---@field focusable? boolean
 ---@field follow_scroll? boolean
----@field mode? delta.spotlight.DiffMode
+---@field mode? delta.diff.HunkMode
 ---@field min_side_by_side_width? integer
 ---@field scroll_step? integer
 ---@field keymaps? delta.spotlight.diff.Keymaps
@@ -101,13 +101,16 @@ local ns = vim.api.nvim_create_namespace("delta.spotlight.diff")
 ---@field zindex? integer
 ---@field focusable? boolean
 ---@field follow_scroll? boolean
----@field mode? delta.spotlight.DiffMode
+---@field mode? delta.diff.HunkMode
 ---@field min_side_by_side_width? integer
 ---@field scroll_step? integer
 ---@field keymaps? delta.spotlight.diff.Keymaps
 
 ---@type table<delta.WinId, delta.spotlight.diff.State>
 local popups = {}
+
+---@type fun(opts: delta.spotlight.diff.OpenHunkOpts): delta.WinId?
+local open_hunk
 
 local hl_groups = {
     popup = Highlights.groups.popup,
@@ -164,17 +167,13 @@ end
 
 ---@return delta.KeySpec[]
 local function resolve_open_keyspecs()
-    local entry = Config.options.spotlight.actions.open_diff
-    if not entry then
-        return {}
-    end
-    return resolve_keyspecs(entry[1])
+    return {}
 end
 
 ---@param keymaps? delta.spotlight.diff.Keymaps
 ---@return delta.spotlight.diff.Keymaps
 local function resolve_popup_keymaps(keymaps)
-    local diff_keys = (Config.options.spotlight.diff or {}).keys or {}
+    local diff_keys = (((Config.options.diff or {}).hunk or {}).keys or {})
     return {
         close = keymaps and keymaps.close or diff_keys.close,
         scroll_up = keymaps and keymaps.scroll_up or diff_keys.scroll_up,
@@ -233,7 +232,7 @@ end
 ---@param char_idx integer
 ---@return integer
 local function byte_col(text, char_idx)
-    return vim.str_byteindex(text, char_idx)
+    return vim.str_byteindex(text, "utf-8", char_idx)
 end
 
 ---@param left string
@@ -324,7 +323,11 @@ local function line_similarity(removed_line, added_line)
         end
     end
 
-    return prefix * 3 + suffix * 3 + substring * 2 + contains_bonus - math.floor(math.abs(removed_chars - added_chars) / 2)
+    return prefix * 3
+        + suffix * 3
+        + substring * 2
+        + contains_bonus
+        - math.floor(math.abs(removed_chars - added_chars) / 2)
 end
 
 ---@param removed_lines string[]
@@ -498,10 +501,8 @@ local function build_inline_content(hunk, title, visible_side)
     end
 
     for _, pair in ipairs(match_changed_lines(hunk.removed.lines, hunk.added.lines)) do
-        local removed_ranges, added_ranges = intraline_ranges(
-            hunk.removed.lines[pair.removed_idx],
-            hunk.added.lines[pair.added_idx]
-        )
+        local removed_ranges, added_ranges =
+            intraline_ranges(hunk.removed.lines[pair.removed_idx], hunk.added.lines[pair.added_idx])
         intraline_hls[removed_line_idxs[pair.removed_idx]] = removed_ranges
         intraline_hls[added_line_idxs[pair.added_idx]] = added_ranges
     end
@@ -595,10 +596,8 @@ local function build_side_by_side_content(hunk, title, visible_side)
     end
 
     for _, pair in ipairs(match_changed_lines(hunk.removed.lines, hunk.added.lines)) do
-        local removed_ranges, added_ranges = intraline_ranges(
-            hunk.removed.lines[pair.removed_idx],
-            hunk.added.lines[pair.added_idx]
-        )
+        local removed_ranges, added_ranges =
+            intraline_ranges(hunk.removed.lines[pair.removed_idx], hunk.added.lines[pair.added_idx])
         left_intraline_hls[pair.removed_idx] = removed_ranges
         right_intraline_hls[pair.added_idx] = added_ranges
     end
@@ -954,16 +953,45 @@ local function refresh_layout(parent_winid)
         return
     end
 
-    local rebuilt = build_content(state.hunk, state.layout, state.content.title, state.side)
-    rebuilt.path = state.content.path
-    state.content = rebuilt
+    local old_has_side = state.side_winid ~= nil
+    local title = state.content.title
+    local path = state.content.path
+    local rebuilt = build_content(state.hunk, state.layout, title, state.side)
+    rebuilt.path = path
 
-    local config, side_config = resolve_layouts(parent_winid, state.anchor, state.content, state.layout)
+    local config, side_config = resolve_layouts(parent_winid, state.anchor, rebuilt, state.layout)
     if not config then
         clear(parent_winid)
         return
     end
 
+    local new_has_side = side_config ~= nil and rebuilt.left ~= nil and rebuilt.right ~= nil
+    if old_has_side ~= new_has_side then
+        local reopen_opts = {
+            winid = parent_winid,
+            bufid = state.parent_bufnr,
+            hunk = state.hunk,
+            side = state.side,
+            path = path,
+            title = title,
+            anchor = state.anchor,
+            border = state.layout.border,
+            max_width = state.layout.max_width,
+            max_height = state.layout.max_height,
+            zindex = state.layout.zindex,
+            focusable = state.layout.focusable,
+            follow_scroll = state.layout.follow_scroll,
+            mode = state.layout.mode,
+            min_side_by_side_width = state.layout.min_side_by_side_width,
+            scroll_step = state.layout.scroll_step,
+            keymaps = state.keymaps,
+        }
+        clear(parent_winid)
+        open_hunk(reopen_opts)
+        return
+    end
+
+    state.content = rebuilt
     config.noautocmd = nil
     vim.api.nvim_win_set_config(state.winid, config)
     if state.side_winid and side_config then
@@ -1198,7 +1226,7 @@ end
 
 ---@param opts delta.spotlight.diff.OpenHunkOpts
 ---@return delta.WinId?
-local function open_hunk(opts)
+open_hunk = function(opts)
     local parent_winid = opts.winid or vim.api.nvim_get_current_win()
     if not vim.api.nvim_win_is_valid(parent_winid) then
         return nil
@@ -1215,7 +1243,7 @@ local function open_hunk(opts)
     local raw_anchor = opts.anchor or { line = opts.hunk:target(opts.side or "added"), col = 0 }
     local anchor = { line = raw_anchor.line, col = raw_anchor.col or 0 }
 
-    local diff_config = Config.options.spotlight.diff or {}
+    local diff_config = ((Config.options.diff or {}).hunk or {})
     local layout_defaults = diff_config.layout
     local layout = {
         border = opts.border or layout_defaults.border,
@@ -1373,8 +1401,8 @@ local function resolve_current_hunk_opts(opts)
         max_width = opts and opts.max_width or nil,
         max_height = opts and opts.max_height or nil,
         zindex = opts and opts.zindex or nil,
-        focusable = opts and opts.focusable or nil,
-        follow_scroll = opts and opts.follow_scroll or nil,
+        focusable = opts and opts.focusable,
+        follow_scroll = opts and opts.follow_scroll,
         mode = opts and opts.mode or nil,
         min_side_by_side_width = opts and opts.min_side_by_side_width or nil,
         scroll_step = opts and opts.scroll_step or nil,

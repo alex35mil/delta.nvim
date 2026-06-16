@@ -48,7 +48,7 @@ T["prefers overlapping unstaged hunk over staged hunk"] = function()
     nvim.api.nvim_win_set_cursor(0, { 7, 0 })
 
     local resolved = nvim.lua_func(function()
-        local diff = require("delta.spotlight.diff")
+        local diff = require("delta.diff.hunk")
         local resolve_current_hunk_opts = _G.find_upvalue(diff.open, "resolve_current_hunk_opts")
         assert(type(resolve_current_hunk_opts) == "function", "failed to resolve popup hunk selector")
 

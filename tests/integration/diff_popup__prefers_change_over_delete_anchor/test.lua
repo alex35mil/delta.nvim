@@ -18,7 +18,7 @@ T["popup selects change hunk over overlapping delete anchor"] = function()
     H.nvim_wait_for_delta_file_state(nvim)
 
     local popup_hunk = nvim.lua_func(function()
-        local Diff = require("delta.spotlight.diff")
+        local Diff = require("delta.diff.hunk")
         local _, resolve_current_hunk_opts = debug.getupvalue(Diff.open, 4)
         assert(type(resolve_current_hunk_opts) == "function", "failed to resolve popup hunk helper")
 

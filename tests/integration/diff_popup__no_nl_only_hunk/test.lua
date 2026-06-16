@@ -26,7 +26,7 @@ T["popup resolves newline-at-EOF-only hunk"] = function()
     end]], 5000, 20)
 
     local popup_hunk = nvim.lua_func(function()
-        local Diff = require("delta.spotlight.diff")
+        local Diff = require("delta.diff.hunk")
         local resolve_current_hunk_opts = _G.find_upvalue(Diff.open, "resolve_current_hunk_opts")
         assert(type(resolve_current_hunk_opts) == "function", "failed to resolve popup hunk helper")
 

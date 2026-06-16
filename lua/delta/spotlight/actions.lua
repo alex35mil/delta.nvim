@@ -116,13 +116,9 @@ function M.exit(ctx)
     ctx.exit()
 end
 
---- Open hunk diff popup for the current hunk, or focus it if already visible.
----@param ctx delta.spotlight.ActionContext
-function M.open_diff(ctx)
-    require("delta.spotlight.diff").open({
-        winid = ctx.win,
-        bufid = ctx.buf,
-    })
+--- Removed: use require("delta").diff.actions.open_hunk_diff instead.
+function M.open_diff()
+    error("delta.nvim: spotlight.actions.open_diff moved to diff.actions.open_hunk_diff", 2)
 end
 
 return M
