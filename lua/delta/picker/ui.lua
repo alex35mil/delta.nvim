@@ -794,6 +794,53 @@ local function preselect_path(path, section)
     return true
 end
 
+---@param targets { path: string, section: delta.picker.Section }[]
+---@return boolean
+local function preselect_first_visible_node(targets)
+    if not state then
+        return false
+    end
+
+    for _, target in ipairs(targets) do
+        for i, node in ipairs(state.nodes) do
+            if node and node.path == target.path and node.section == target.section then
+                state.cursor_idx = i
+                update_cursor_highlight()
+                highlight_branch()
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+---@param idx integer
+---@param section delta.picker.Section
+---@return { path: string, section: delta.picker.Section }[]
+local function next_visible_targets(idx, section)
+    if not state then
+        return {}
+    end
+
+    local targets = {}
+    for i = idx + 1, #state.nodes do
+        local node = state.nodes[i]
+        if node and node.section == section then
+            targets[#targets + 1] = { path = node.path, section = node.section }
+        end
+    end
+
+    for i = idx - 1, 1, -1 do
+        local node = state.nodes[i]
+        if node and node.section == section then
+            targets[#targets + 1] = { path = node.path, section = node.section }
+        end
+    end
+
+    return targets
+end
+
 --- Render the tree into the buffer.
 local function render()
     if not state then
@@ -1085,6 +1132,7 @@ local function make_context()
             end
 
             local is_staged = state.staged_start > 0 and state.cursor_idx >= state.staged_start
+            local next_targets = next_visible_targets(state.cursor_idx, node.section)
 
             local function do_toggle()
                 Git.async(function()
@@ -1099,6 +1147,7 @@ local function make_context()
                             return
                         end
                         render()
+                        preselect_first_visible_node(next_targets)
                         if cb then
                             cb()
                         end
