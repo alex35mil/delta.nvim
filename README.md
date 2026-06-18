@@ -606,6 +606,8 @@ Available built-ins:
 
 `require("delta").diff.open_file()` opens the current file in a new native diff tab. `auto` mode shows unstaged changes first, then staged changes. Configure `diff.file.keys` for tab-local actions: close, stage/unstage file, reset file, and expand/shrink native diff context.
 
+Markdown file diffs enable wrapping and `linebreak` in both side-by-side panes for readability; other filetypes stay unwrapped.
+
 ```lua
 local diff_actions = require("delta").diff.actions
 

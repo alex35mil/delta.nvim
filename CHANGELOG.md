@@ -2,6 +2,7 @@
 
 ## 2026-06-18
 
+- **CHANGED:** Wrap Markdown side-by-side file diffs for readability.
 - **FIXED:** Keep picker selection on the next changed file after staging an entry.
 
 ## 2026-06-16

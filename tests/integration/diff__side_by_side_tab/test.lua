@@ -56,6 +56,8 @@ T["opens side-by-side diff tab and closes back to origin"] = function()
             right_winhighlight = vim.wo[wins[2]].winhighlight,
             left_winbar = vim.wo[wins[1]].winbar,
             right_winbar = vim.wo[wins[2]].winbar,
+            left_wrap = vim.wo[wins[1]].wrap,
+            right_wrap = vim.wo[wins[2]].wrap,
             left_line = vim.api.nvim_buf_get_lines(left_buf, 1, 2, false)[1],
             right_line = vim.api.nvim_buf_get_lines(right_buf, 1, 2, false)[1],
         }
@@ -70,6 +72,8 @@ T["opens side-by-side diff tab and closes back to origin"] = function()
     assert(opened.right_winbar:find("DeltaDiffFileWinbarCurrent", 1, true) ~= nil)
     assert(opened.left_name:find("delta://diff/", 1, true) ~= nil)
     assert(opened.right_name:find("delta://diff/", 1, true) ~= nil)
+    H.eq(opened.left_wrap, false)
+    H.eq(opened.right_wrap, false)
     H.eq(opened.left_line, "two")
     H.eq(opened.right_line, "two changed")
     H.eq(nvim.lua("return vim.go.diffopt:match('context:(%d+)')"), "1")
@@ -93,6 +97,72 @@ T["opens side-by-side diff tab and closes back to origin"] = function()
     H.eq(closed.tab, origin.tab)
     H.eq(closed.win, origin.win)
     H.eq(vim.uv.fs_realpath(closed.name), vim.uv.fs_realpath(repo .. "/file.txt"))
+end
+
+T["wraps markdown side-by-side diff windows only"] = function()
+    local repo = H.init_repo({
+        ["note.md"] = { "one", "two" },
+        ["doc.markdown"] = { "alpha", "beta" },
+        ["plain.txt"] = { "red", "blue" },
+    })
+    H.finally_rm(repo)
+
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+
+    H.write_file(repo .. "/note.md", { "one", "two changed" })
+    H.write_file(repo .. "/doc.markdown", { "alpha", "beta changed" })
+    H.write_file(repo .. "/plain.txt", { "red", "blue changed" })
+
+    H.nvim_set_cwd(nvim, repo)
+    nvim.lua([[require('delta').setup()]])
+
+    local opts = nvim.lua_func(function(paths)
+        local diff = require('delta.diff')
+        local results = {}
+        for _, path in ipairs(paths) do
+            diff.open_file({ path = path })
+            vim.wait(5000, function()
+                return #vim.api.nvim_list_tabpages() == 2
+            end, 20)
+
+            local tab = vim.api.nvim_get_current_tabpage()
+            local wins = vim.api.nvim_tabpage_list_wins(tab)
+            local left_buf = vim.api.nvim_win_get_buf(wins[1])
+            local right_buf = vim.api.nvim_win_get_buf(wins[2])
+            results[path] = {
+                left_filetype = vim.bo[left_buf].filetype,
+                right_filetype = vim.bo[right_buf].filetype,
+                left_wrap = vim.wo[wins[1]].wrap,
+                right_wrap = vim.wo[wins[2]].wrap,
+                left_linebreak = vim.wo[wins[1]].linebreak,
+                right_linebreak = vim.wo[wins[2]].linebreak,
+            }
+
+            diff.close_file(tab)
+            vim.wait(5000, function()
+                return #vim.api.nvim_list_tabpages() == 1
+            end, 20)
+        end
+        return results
+    end, { "note.md", "doc.markdown", "plain.txt" })
+
+    H.eq(opts["note.md"].left_filetype, "markdown")
+    H.eq(opts["note.md"].right_filetype, "markdown")
+    H.eq(opts["note.md"].left_wrap, true)
+    H.eq(opts["note.md"].right_wrap, true)
+    H.eq(opts["note.md"].left_linebreak, true)
+    H.eq(opts["note.md"].right_linebreak, true)
+
+    H.eq(opts["doc.markdown"].left_filetype, "markdown")
+    H.eq(opts["doc.markdown"].right_filetype, "markdown")
+    H.eq(opts["doc.markdown"].left_wrap, true)
+    H.eq(opts["doc.markdown"].right_wrap, true)
+    H.eq(opts["doc.markdown"].left_linebreak, true)
+    H.eq(opts["doc.markdown"].right_linebreak, true)
+
+    H.eq(opts["plain.txt"].left_wrap, false)
+    H.eq(opts["plain.txt"].right_wrap, false)
 end
 
 T["keeps diffopt owned until all side-by-side diff tabs close"] = function()

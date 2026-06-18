@@ -154,8 +154,13 @@ local function set_buffer_lines(bufnr, lines)
 end
 
 ---@param winid delta.WinId
-local function setup_window(winid)
-    vim.wo[winid].wrap = false
+---@param bufnr delta.BufId
+local function setup_window(winid, bufnr)
+    local is_markdown = vim.bo[bufnr].filetype == "markdown"
+    vim.wo[winid].wrap = is_markdown
+    if is_markdown then
+        vim.wo[winid].linebreak = true
+    end
     vim.wo[winid].number = true
     vim.wo[winid].relativenumber = false
     vim.wo[winid].signcolumn = "no"
@@ -689,12 +694,12 @@ local function open_tab(
     local tab = vim.api.nvim_get_current_tabpage()
     local left_win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(left_win, left_buf)
-    setup_window(left_win)
+    setup_window(left_win, left_buf)
 
     vim.cmd("rightbelow vsplit")
     local right_win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(right_win, right_buf)
-    setup_window(right_win)
+    setup_window(right_win, right_buf)
 
     vim.api.nvim_win_call(left_win, function()
         vim.cmd("diffthis")
@@ -702,6 +707,8 @@ local function open_tab(
     vim.api.nvim_win_call(right_win, function()
         vim.cmd("diffthis")
     end)
+    setup_window(left_win, left_buf)
+    setup_window(right_win, right_buf)
     vim.cmd("wincmd =")
 
     local state = {
