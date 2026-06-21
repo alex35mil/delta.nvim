@@ -119,6 +119,11 @@ delta.setup({
                 -- Lines added/removed by expand/shrink actions.
                 step = 5,
             },
+            -- How to show file diff keymap hints:
+            -- "dialog" or true (default): show compact "?=keymaps" and open keymap help with ?.
+            -- "winbar": show full inline winbar hints.
+            -- false: hide hints and bind no help key.
+            keymap_hints = "dialog",
             keys = {
                 -- Optional keymaps inside side-by-side file diff tabs.
                 -- nil leaves them unset.
@@ -604,7 +609,7 @@ Available built-ins:
 
 ### Side-by-side file diff
 
-`require("delta").diff.open_file()` opens the current file in a new native diff tab. `auto` mode shows unstaged changes first, then staged changes. Configure `diff.file.keys` for tab-local actions: close, stage/unstage file, reset file, and expand/shrink native diff context.
+`require("delta").diff.open_file()` opens the current file in a new native diff tab. `auto` mode shows unstaged changes first, then staged changes. Configure `diff.file.keys` for tab-local actions: close, stage/unstage file, reset file, and expand/shrink native diff context. By default, the file diff winbar shows `?=keymaps`; pressing `?` opens keymap help. The help dialog reuses `diff.file.keys.close` plus fallback close keys. Set `diff.file.keymap_hints = "winbar"` for full inline hints, or `false` to hide hints and bind no help key. `true` aliases the default dialog mode. If `?` conflicts with a file diff action key, the action key wins and the help binding/hint is omitted.
 
 Markdown file diffs enable wrapping and `linebreak` in both side-by-side panes for readability; other filetypes stay unwrapped.
 
@@ -614,6 +619,7 @@ local diff_actions = require("delta").diff.actions
 require("delta").setup({
     diff = {
         file = {
+            keymap_hints = "dialog",
             keys = {
                 expand_context = "+",
                 shrink_context = "-",

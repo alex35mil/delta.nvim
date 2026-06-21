@@ -5,6 +5,7 @@ local M = {}
 local Config = require("delta.config")
 local Git = require("delta.git")
 local Highlights = require("delta.diff.highlights")
+local Keys = require("delta.keys")
 local Mode = require("delta.spotlight.mode")
 local Notify = require("delta.notify")
 local Paths = require("delta.spotlight.paths")
@@ -35,6 +36,8 @@ local DEFAULT_DIFF_CONTEXT = 6
 ---@field context_base integer
 ---@field context_step integer
 ---@field augroup integer
+---@field keymap_hints { mode: "none"|"dialog"|"winbar", key?: delta.KeySpec, lhs?: string, collides?: boolean }
+---@field hint_actions table[]
 ---@field closing? boolean
 ---@field mutating? boolean
 
@@ -83,20 +86,7 @@ local function resolve_keyspecs(keyspecs)
     if not keyspecs then
         return {}
     end
-    return require("delta.keys").resolve(keyspecs)
-end
-
----@param key delta.KeySpec
----@return delta.KeyModes
-local function key_modes(key)
-    return type(key) == "table" and key.modes or "n"
-end
-
----@param keyspecs delta.KeySpecs|nil
----@return string
-local function first_lhs(keyspecs)
-    local keys = resolve_keyspecs(keyspecs)
-    return keys[1] and require("delta.keys").lhs(keys[1]) or ""
+    return Keys.resolve(keyspecs)
 end
 
 ---@param lines string[]
@@ -186,42 +176,167 @@ local function labels(state)
     return old_label, new_label
 end
 
+---@param keys delta.diff.FileKeysConfig
+---@return table[]
+local function keymap_hint_actions(keys)
+    return {
+        { label = "Stage/unstage file", hint = "stage", keys = resolve_keyspecs(keys.toggle_stage_file) },
+        {
+            label = "Stage/unstage file and close",
+            hint = "stage+close",
+            keys = resolve_keyspecs(keys.toggle_stage_file_and_close),
+        },
+        { label = "Reset file", hint = "reset", keys = resolve_keyspecs(keys.reset_file) },
+        { label = "Reset file and close", hint = "reset+close", keys = resolve_keyspecs(keys.reset_file_and_close) },
+        { label = "Expand context", hint = "expand", keys = resolve_keyspecs(keys.expand_context) },
+        { label = "Shrink context", hint = "shrink", keys = resolve_keyspecs(keys.shrink_context) },
+        { label = "Close", hint = "close", keys = resolve_keyspecs(keys.close) },
+    }
+end
+
+---@param action table
+---@return string[]
+local function lhs_values(action)
+    local values = {}
+    for _, key in ipairs(action.keys or {}) do
+        local lhs = Keys.lhs(key)
+        if lhs ~= "" then
+            values[#values + 1] = lhs
+        end
+    end
+    return values
+end
+
+---@param lhs string
+---@param actions table[]
+---@return boolean
+local function lhs_collides(lhs, actions)
+    if lhs == "" then
+        return false
+    end
+    local normalized = Keys.normalize_lhs(lhs)
+    for _, action in ipairs(actions) do
+        for _, action_lhs in ipairs(lhs_values(action)) do
+            if Keys.normalize_lhs(action_lhs) == normalized then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+---@param file_config delta.diff.FileConfig
+---@param actions table[]
+---@return { mode: "none"|"dialog"|"winbar", key?: delta.KeySpec, lhs?: string, collides?: boolean }
+local function resolve_keymap_hints(file_config, actions)
+    local value = file_config.keymap_hints
+    if value == nil then
+        value = "dialog"
+    end
+    if value == false then
+        return { mode = "none" }
+    end
+    if value == "winbar" then
+        return { mode = "winbar" }
+    end
+    if value ~= true and value ~= "dialog" then
+        Notify.warn("diff: unsupported diff.file.keymap_hints; falling back to dialog")
+    end
+    local help_key = "?"
+    local help_lhs = Keys.lhs(help_key)
+    return { mode = "dialog", key = help_key, lhs = help_lhs, collides = lhs_collides(help_lhs, actions) }
+end
+
+---@param state delta.diff.file.State
+local function open_keymap_dialog(state)
+    local lines = { "File diff keymaps", "" }
+    for _, action in ipairs(state.hint_actions) do
+        local values = lhs_values(action)
+        local keys_text = #values > 0 and table.concat(values, ", ") or "(unbound)"
+        lines[#lines + 1] = action.label .. ": " .. keys_text
+    end
+    local close_keys = {}
+    local seen_close_keys = {}
+    local function add_close_key(lhs)
+        if lhs ~= "" and not seen_close_keys[lhs] then
+            seen_close_keys[lhs] = true
+            close_keys[#close_keys + 1] = lhs
+        end
+    end
+    for _, action in ipairs(state.hint_actions) do
+        if action.hint == "close" then
+            for _, lhs in ipairs(lhs_values(action)) do
+                add_close_key(lhs)
+            end
+        end
+    end
+    for _, lhs in ipairs({ "q", "<Esc>", "<CR>" }) do
+        add_close_key(lhs)
+    end
+
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "Close: " .. table.concat(close_keys, ", ")
+
+    local width = 0
+    for _, line in ipairs(lines) do
+        width = math.max(width, vim.fn.strdisplaywidth(line))
+    end
+    width = math.min(math.max(width + 4, 40), math.max(vim.o.columns - 4, 20))
+    local height = #lines
+    local row = math.max(0, math.floor((vim.o.lines - height) / 2) - 1)
+    local col = math.max(0, math.floor((vim.o.columns - width) / 2))
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_name(buf, "delta://diff/keymaps/" .. buf)
+    vim.bo[buf].buftype = "nofile"
+    vim.bo[buf].bufhidden = "wipe"
+    vim.bo[buf].swapfile = false
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.bo[buf].modifiable = false
+
+    local win = vim.api.nvim_open_win(buf, true, {
+        relative = "editor",
+        row = row,
+        col = col,
+        width = width,
+        height = height,
+        border = "rounded",
+        title = " Keymaps ",
+        style = "minimal",
+    })
+
+    local function close()
+        if vim.api.nvim_win_is_valid(win) then
+            vim.api.nvim_win_close(win, true)
+        end
+    end
+    for _, lhs in ipairs(close_keys) do
+        vim.keymap.set("n", lhs, close, { buffer = buf, nowait = true, desc = "Close keymap help" })
+    end
+    vim.api.nvim_create_autocmd("BufLeave", {
+        buffer = buf,
+        once = true,
+        callback = close,
+    })
+end
+
 ---@param state delta.diff.file.State
 local function render_winbars(state)
     local old_label, new_label = labels(state)
-    local keys = (((Config.options.diff or {}).file or {}).keys or {})
-    local toggle_lhs = first_lhs(keys.toggle_stage_file)
-    local toggle_close_lhs = first_lhs(keys.toggle_stage_file_and_close)
-    local reset_lhs = first_lhs(keys.reset_file)
-    local reset_close_lhs = first_lhs(keys.reset_file_and_close)
-    local expand_lhs = first_lhs(keys.expand_context)
-    local shrink_lhs = first_lhs(keys.shrink_context)
-    local close_lhs = first_lhs(keys.close)
-
-    local hint = {}
-    if toggle_lhs ~= "" then
-        hint[#hint + 1] = toggle_lhs .. "=stage"
-    end
-    if toggle_close_lhs ~= "" then
-        hint[#hint + 1] = toggle_close_lhs .. "=stage+close"
-    end
-    if reset_lhs ~= "" then
-        hint[#hint + 1] = reset_lhs .. "=reset"
-    end
-    if reset_close_lhs ~= "" then
-        hint[#hint + 1] = reset_close_lhs .. "=reset+close"
-    end
-    if expand_lhs ~= "" then
-        hint[#hint + 1] = expand_lhs .. "=expand"
-    end
-    if shrink_lhs ~= "" then
-        hint[#hint + 1] = shrink_lhs .. "=shrink"
-    end
-    if close_lhs ~= "" then
-        hint[#hint + 1] = close_lhs .. "=close"
+    local hint_text = ""
+    if state.keymap_hints.mode == "winbar" then
+        local hint = {}
+        for _, action in ipairs(state.hint_actions) do
+            local values = lhs_values(action)
+            if values[1] then
+                hint[#hint + 1] = values[1] .. "=" .. action.hint
+            end
+        end
+        hint_text = #hint > 0 and (" [" .. table.concat(hint, "  ") .. "]") or ""
+    elseif state.keymap_hints.mode == "dialog" and not state.keymap_hints.collides and state.keymap_hints.lhs then
+        hint_text = " [" .. state.keymap_hints.lhs .. "=keymaps]"
     end
 
-    local hint_text = #hint > 0 and (" [" .. table.concat(hint, "  ") .. "]") or ""
     local base = "%#" .. Highlights.groups.file_winbar .. "#"
     local base_label = "%#" .. Highlights.groups.file_winbar_base .. "#"
     local current_label = "%#" .. Highlights.groups.file_winbar_current .. "#"
@@ -601,8 +716,8 @@ end
 ---@param desc string
 local function bind_file_keys(state, keyspecs, handler, desc)
     for _, keyspec in ipairs(resolve_keyspecs(keyspecs)) do
-        local lhs = require("delta.keys").lhs(keyspec)
-        local modes = key_modes(keyspec)
+        local lhs = Keys.lhs(keyspec)
+        local modes = Keys.modes(keyspec, "n")
         for _, bufnr in ipairs({ state.left_buf, state.right_buf }) do
             vim.keymap.set(modes, lhs, handler, { buffer = bufnr, nowait = true, desc = desc })
         end
@@ -633,6 +748,11 @@ local function setup_keymaps(state)
     bind_file_keys(state, keys.shrink_context, function()
         update_context(state, -state.context_step)
     end, "delta.diff.file.shrink_context")
+    if state.keymap_hints.mode == "dialog" and state.keymap_hints.key and not state.keymap_hints.collides then
+        bind_file_keys(state, state.keymap_hints.key, function()
+            open_keymap_dialog(state)
+        end, "delta.diff.file.keymaps")
+    end
 end
 
 ---@param state delta.diff.file.State
@@ -677,6 +797,9 @@ local function open_tab(
 )
     local file_config = (Config.options.diff or {}).file or {}
     local context_config = file_config.context or {}
+    local keys = file_config.keys or {}
+    local hint_actions = keymap_hint_actions(keys)
+    local keymap_hints = resolve_keymap_hints(file_config, hint_actions)
     local context_base = context_config.base or diff_context()
     local context_step = math.max(1, context_config.step or 5)
     if diffopt_refcount == 0 then
@@ -729,6 +852,8 @@ local function open_tab(
         context_base = context_base,
         context_step = context_step,
         augroup = 0,
+        keymap_hints = keymap_hints,
+        hint_actions = hint_actions,
     }
     tabs[tab] = state
     render_winbars(state)

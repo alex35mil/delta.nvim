@@ -36,4 +36,39 @@ function M.lhs(key)
     return key --[[@as string]]
 end
 
+--- Normalize an lhs for effective-key comparisons.
+---@param lhs string
+---@return string
+function M.normalize_lhs(lhs)
+    local normalized = lhs:gsub("<([^>]+)>", function(token)
+        return "<" .. token:lower() .. ">"
+    end)
+    return vim.api.nvim_replace_termcodes(normalized, true, true, true)
+end
+
+--- Normalize a mode string/table to a mode list.
+---@param modes string|string[]
+---@return string[]
+function M.normalize_modes(modes)
+    if type(modes) == "table" then
+        return modes
+    end
+    local result = {}
+    for i = 1, #modes do
+        result[#result + 1] = modes:sub(i, i)
+    end
+    return result
+end
+
+--- Resolve the modes for a KeySpec, falling back to defaults.
+---@param key delta.KeySpec
+---@param default_modes string|string[]
+---@return string[]
+function M.modes(key, default_modes)
+    if type(key) == "table" and key.modes then
+        return M.normalize_modes(key.modes)
+    end
+    return M.normalize_modes(default_modes)
+end
+
 return M

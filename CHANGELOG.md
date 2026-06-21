@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-06-21
+
+- **ADDED:** Add configurable side-by-side file diff keymap hints with `?` help, inline winbar hints, and disabled mode.
+
 ## 2026-06-18
 
 - **CHANGED:** Wrap Markdown side-by-side file diffs for readability.

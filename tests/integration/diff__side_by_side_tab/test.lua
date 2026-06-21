@@ -70,6 +70,10 @@ T["opens side-by-side diff tab and closes back to origin"] = function()
     assert(opened.right_winhighlight:find("WinBar:DeltaDiffFileWinbar", 1, true) ~= nil)
     assert(opened.left_winbar:find("DeltaDiffFileWinbarBase", 1, true) ~= nil)
     assert(opened.right_winbar:find("DeltaDiffFileWinbarCurrent", 1, true) ~= nil)
+    assert(opened.right_winbar:find("?=keymaps", 1, true) ~= nil)
+    assert(opened.right_winbar:find("+=expand", 1, true) == nil)
+    assert(opened.right_winbar:find("_=shrink", 1, true) == nil)
+    assert(opened.right_winbar:find("q=close", 1, true) == nil)
     assert(opened.left_name:find("delta://diff/", 1, true) ~= nil)
     assert(opened.right_name:find("delta://diff/", 1, true) ~= nil)
     H.eq(opened.left_wrap, false)
@@ -77,6 +81,16 @@ T["opens side-by-side diff tab and closes back to origin"] = function()
     H.eq(opened.left_line, "two")
     H.eq(opened.right_line, "two changed")
     H.eq(nvim.lua("return vim.go.diffopt:match('context:(%d+)')"), "1")
+
+    nvim.api.nvim_input("?")
+    H.nvim_wait_for(nvim, "vim.api.nvim_buf_get_name(0):find('delta://diff/keymaps/', 1, true) ~= nil", 5000, 20)
+    local help = nvim.lua_func(function()
+        return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+    end)
+    assert(help:find("Expand context: +", 1, true) ~= nil)
+    assert(help:find("Shrink context: _", 1, true) ~= nil)
+    assert(help:find("Close: q", 1, true) ~= nil)
+    nvim.api.nvim_input("q")
 
     nvim.api.nvim_input("+")
     H.nvim_wait_for(nvim, "vim.go.diffopt:match('context:(%d+)') == '3'", 5000, 20)
@@ -97,6 +111,220 @@ T["opens side-by-side diff tab and closes back to origin"] = function()
     H.eq(closed.tab, origin.tab)
     H.eq(closed.win, origin.win)
     H.eq(vim.uv.fs_realpath(closed.name), vim.uv.fs_realpath(repo .. "/file.txt"))
+end
+
+T["aliases true file diff keymap hints to dialog mode"] = function()
+    local repo = H.init_repo({
+        ["file.txt"] = { "one", "two", "three" },
+    })
+    H.finally_rm(repo)
+
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+
+    H.write_file(repo .. "/file.txt", { "one", "two changed", "three" })
+
+    H.nvim_set_cwd(nvim, repo)
+    nvim.lua([[
+        require('delta').setup({
+            diff = {
+                file = {
+                    keymap_hints = true,
+                    keys = { close = 'x' },
+                },
+            },
+        })
+    ]])
+    H.nvim_edit(nvim, repo .. "/file.txt")
+
+    nvim.lua_notify([[require('delta.diff').open_file()]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+
+    local right_winbar = nvim.lua_func(function()
+        local wins = vim.api.nvim_tabpage_list_wins(0)
+        return vim.wo[wins[2]].winbar
+    end)
+
+    assert(right_winbar:find("?=keymaps", 1, true) ~= nil)
+    assert(right_winbar:find("x=close", 1, true) == nil)
+
+    nvim.api.nvim_input("?")
+    H.nvim_wait_for(nvim, "vim.api.nvim_buf_get_name(0):find('delta://diff/keymaps/', 1, true) ~= nil", 5000, 20)
+    local help = nvim.lua_func(function()
+        return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+    end)
+    assert(help:find("Close: x, q, <Esc>, <CR>", 1, true) ~= nil)
+    nvim.api.nvim_input("x")
+    H.nvim_wait_for(nvim, "vim.api.nvim_buf_get_name(0):find('delta://diff/keymaps/', 1, true) == nil", 5000, 20)
+end
+
+T["shows side-by-side diff keymap hints in winbar mode"] = function()
+    local repo = H.init_repo({
+        ["file.txt"] = { "one", "two", "three" },
+    })
+    H.finally_rm(repo)
+
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+
+    H.write_file(repo .. "/file.txt", { "one", "two changed", "three" })
+
+    H.nvim_set_cwd(nvim, repo)
+    nvim.lua([[
+        require('delta').setup({
+            diff = {
+                file = {
+                    keymap_hints = 'winbar',
+                    keys = { close = 'q', expand_context = '+', shrink_context = '-' },
+                },
+            },
+        })
+    ]])
+    H.nvim_edit(nvim, repo .. "/file.txt")
+
+    nvim.lua_notify([[require('delta.diff').open_file()]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+
+    local right_winbar = nvim.lua_func(function()
+        local wins = vim.api.nvim_tabpage_list_wins(0)
+        return vim.wo[wins[2]].winbar
+    end)
+
+    assert(right_winbar:find("+=expand", 1, true) ~= nil)
+    assert(right_winbar:find("-=shrink", 1, true) ~= nil)
+    assert(right_winbar:find("q=close", 1, true) ~= nil)
+    assert(right_winbar:find("?=keymaps", 1, true) == nil)
+end
+
+T["hides side-by-side diff keymap hints when disabled"] = function()
+    local repo = H.init_repo({
+        ["file.txt"] = { "one", "two", "three" },
+    })
+    H.finally_rm(repo)
+
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+
+    H.write_file(repo .. "/file.txt", { "one", "two changed", "three" })
+
+    H.nvim_set_cwd(nvim, repo)
+    nvim.lua([[
+        require('delta').setup({
+            diff = {
+                file = {
+                    keymap_hints = false,
+                    keys = { close = 'q', expand_context = '+', shrink_context = '-' },
+                },
+            },
+        })
+    ]])
+    H.nvim_edit(nvim, repo .. "/file.txt")
+
+    nvim.lua_notify([[require('delta.diff').open_file()]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+
+    local opened = nvim.lua_func(function()
+        local tab = vim.api.nvim_get_current_tabpage()
+        local wins = vim.api.nvim_tabpage_list_wins(tab)
+        return {
+            left_winbar = vim.wo[wins[1]].winbar,
+            right_winbar = vim.wo[wins[2]].winbar,
+        }
+    end)
+
+    assert(opened.left_winbar:find("DeltaDiffFileWinbarBase", 1, true) ~= nil)
+    assert(opened.right_winbar:find("DeltaDiffFileWinbarCurrent", 1, true) ~= nil)
+    assert(opened.right_winbar:find("?=keymaps", 1, true) == nil)
+    assert(opened.right_winbar:find("+=expand", 1, true) == nil)
+    assert(opened.right_winbar:find("-=shrink", 1, true) == nil)
+    assert(opened.right_winbar:find("q=close", 1, true) == nil)
+    H.eq(nvim.lua([[return vim.fn.maparg('?', 'n', false, true).buffer == 1]]), false)
+
+    nvim.api.nvim_input("q")
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+end
+
+T["omits file diff keymap help when question mark collides"] = function()
+    local repo = H.init_repo({
+        ["file.txt"] = { "one", "two", "three" },
+    })
+    H.finally_rm(repo)
+
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+
+    H.write_file(repo .. "/file.txt", { "one", "two changed", "three" })
+
+    H.nvim_set_cwd(nvim, repo)
+    nvim.lua([[
+        require('delta').setup({
+            diff = {
+                file = {
+                    keys = { close = '?' },
+                },
+            },
+        })
+    ]])
+    H.nvim_edit(nvim, repo .. "/file.txt")
+
+    nvim.lua_notify([[require('delta.diff').open_file()]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+
+    local right_winbar = nvim.lua_func(function()
+        local wins = vim.api.nvim_tabpage_list_wins(0)
+        return vim.wo[wins[2]].winbar
+    end)
+    assert(right_winbar:find("?=keymaps", 1, true) == nil)
+
+    nvim.api.nvim_input("?")
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+end
+
+T["warns once and falls back to dialog for unsupported file diff keymap hints"] = function()
+    local repo = H.init_repo({
+        ["file.txt"] = { "one", "two", "three" },
+    })
+    H.finally_rm(repo)
+
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+
+    H.write_file(repo .. "/file.txt", { "one", "two changed", "three" })
+
+    H.nvim_set_cwd(nvim, repo)
+    nvim.lua([[
+        _G.delta_notifications = {}
+        vim.notify = function(msg, level)
+            _G.delta_notifications[#_G.delta_notifications + 1] = { msg = msg, level = level }
+        end
+        require('delta').setup({
+            diff = {
+                file = {
+                    keymap_hints = 'bad-mode',
+                    keys = { close = 'q', expand_context = '+' },
+                },
+            },
+        })
+    ]])
+    H.nvim_edit(nvim, repo .. "/file.txt")
+
+    nvim.lua_notify([[require('delta.diff').open_file()]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+
+    local opened = nvim.lua_func(function()
+        local wins = vim.api.nvim_tabpage_list_wins(0)
+        return {
+            right_winbar = vim.wo[wins[2]].winbar,
+            notifications = _G.delta_notifications,
+        }
+    end)
+    assert(opened.right_winbar:find("?=keymaps", 1, true) ~= nil)
+    H.eq(#opened.notifications, 1)
+    assert(opened.notifications[1].msg:find("unsupported diff.file.keymap_hints", 1, true) ~= nil)
+
+    nvim.api.nvim_input("+")
+    H.nvim_wait_for(nvim, "vim.go.diffopt:match('context:(%d+)') == '11'", 5000, 20)
+    H.eq(nvim.lua("return #_G.delta_notifications"), 1)
 end
 
 T["wraps markdown side-by-side diff windows only"] = function()

@@ -42,6 +42,7 @@
 ---@class delta.diff.FileConfig
 ---@field keys delta.diff.FileKeysConfig
 ---@field context delta.diff.FileContextConfig
+---@field keymap_hints? "dialog"|"winbar"|boolean
 
 --- Context passed to diff action handlers.
 ---@class delta.diff.ActionContext
@@ -70,6 +71,7 @@ return {
             base = nil,
             step = 5,
         },
+        keymap_hints = "dialog",
         keys = {
             expand_context = "+",
             shrink_context = "-",
