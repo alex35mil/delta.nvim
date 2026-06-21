@@ -48,6 +48,7 @@ This repo treats `main` as released. Keep `CHANGELOG.md` manual and lean:
 
 Rules:
 - Add/update a date section for user-facing changes: config/API, commands, keymaps, documented behavior, compatibility, important fixes.
+- Use today's local date (`date +%F`, or the current-date context if already provided) for the section; do not append to the latest existing section unless it is today's date.
 - Use flat bullets only; no nested categories.
 - Tags: `**BREAKING:**`, `**ADDED:**`, `**CHANGED:**`, `**FIXED:**`, `**REMOVED:**`.
 - Do not add manual commit links; link issues/PRs only when they add useful context.
