@@ -2,6 +2,67 @@ local T = MiniTest.new_set()
 
 local H = require("tests.support.helpers")
 
+local function numbered_lines(count)
+    local lines = {}
+    for i = 1, count do
+        lines[i] = "line " .. i
+    end
+    return lines
+end
+
+local function init_cursor_sync_repo()
+    local lines = numbered_lines(100)
+    local repo = H.init_repo({
+        ["file.txt"] = lines,
+        ["other.txt"] = numbered_lines(100),
+    })
+
+    local changed = vim.deepcopy(lines)
+    changed[20] = "line 20 changed"
+    changed[80] = "line 80 changed"
+    H.write_file(repo .. "/file.txt", changed)
+
+    return repo
+end
+
+local function setup_file_diff(nvim)
+    nvim.lua([[
+        require('delta').setup({
+            diff = {
+                file = {
+                    context = { base = 1, step = 2 },
+                    keys = { close = 'q' },
+                },
+            },
+        })
+    ]])
+end
+
+local function open_file_diff(nvim)
+    nvim.lua_notify([[require('delta.diff').open_file()]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+end
+
+local function diff_cursor_lines(nvim)
+    return nvim.lua_func(function()
+        local tab = vim.api.nvim_get_current_tabpage()
+        local wins = vim.api.nvim_tabpage_list_wins(tab)
+        return {
+            left = vim.api.nvim_win_get_cursor(wins[1])[1],
+            right = vim.api.nvim_win_get_cursor(wins[2])[1],
+        }
+    end)
+end
+
+local function set_right_diff_cursor(nvim, line)
+    nvim.lua_func(function(target_line)
+        local tab = vim.api.nvim_get_current_tabpage()
+        local wins = vim.api.nvim_tabpage_list_wins(tab)
+        vim.api.nvim_set_current_win(wins[2])
+        vim.api.nvim_win_set_cursor(wins[2], { target_line, 0 })
+    end, line)
+end
+
 T["opens side-by-side diff tab and closes back to origin"] = function()
     local repo = H.init_repo({
         ["file.txt"] = { "one", "two", "three" },
@@ -111,6 +172,144 @@ T["opens side-by-side diff tab and closes back to origin"] = function()
     H.eq(closed.tab, origin.tab)
     H.eq(closed.win, origin.win)
     H.eq(vim.uv.fs_realpath(closed.name), vim.uv.fs_realpath(repo .. "/file.txt"))
+end
+
+T["syncs file diff cursor on open"] = function()
+    local repo = init_cursor_sync_repo()
+    H.finally_rm(repo)
+
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+
+    H.nvim_set_cwd(nvim, repo)
+    setup_file_diff(nvim)
+    H.nvim_edit(nvim, repo .. "/file.txt")
+
+    nvim.lua([[vim.api.nvim_win_set_cursor(0, { 79, 0 })]])
+    open_file_diff(nvim)
+    H.eq(diff_cursor_lines(nvim), { left = 79, right = 79 })
+
+    nvim.lua_notify([[require('delta.diff').close_all()]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+
+    nvim.lua([[vim.api.nvim_win_set_cursor(0, { 70, 0 })]])
+    open_file_diff(nvim)
+    H.eq(diff_cursor_lines(nvim), { left = 80, right = 80 })
+end
+
+T["does not sync unrelated origin cursor on path or mismatched buffer open"] = function()
+    local repo = init_cursor_sync_repo()
+    H.finally_rm(repo)
+
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+
+    H.nvim_set_cwd(nvim, repo)
+    setup_file_diff(nvim)
+    H.nvim_edit(nvim, repo .. "/other.txt")
+    nvim.lua([[vim.api.nvim_win_set_cursor(0, { 50, 0 })]])
+
+    nvim.lua_func(function(path)
+        require("delta.diff").open_file({ path = path })
+    end, repo .. "/file.txt")
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+
+    local cursors = diff_cursor_lines(nvim)
+    assert(cursors.left ~= 50, vim.inspect(cursors))
+    assert(cursors.right ~= 50, vim.inspect(cursors))
+
+    nvim.lua_notify([[require('delta.diff').close_all()]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+
+    H.nvim_edit(nvim, repo .. "/file.txt")
+    local file_buf = nvim.lua("return vim.api.nvim_get_current_buf()")
+    H.nvim_edit(nvim, repo .. "/other.txt")
+    nvim.lua([[vim.api.nvim_win_set_cursor(0, { 50, 0 })]])
+
+    nvim.lua_func(function(bufid)
+        require("delta.diff").open_file({ winid = vim.api.nvim_get_current_win(), bufid = bufid })
+    end, file_buf)
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+
+    cursors = diff_cursor_lines(nvim)
+    assert(cursors.left ~= 50, vim.inspect(cursors))
+    assert(cursors.right ~= 50, vim.inspect(cursors))
+end
+
+T["syncs file diff cursor on close"] = function()
+    local repo = init_cursor_sync_repo()
+    H.finally_rm(repo)
+
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+
+    H.nvim_set_cwd(nvim, repo)
+    setup_file_diff(nvim)
+    H.nvim_edit(nvim, repo .. "/file.txt")
+
+    open_file_diff(nvim)
+    set_right_diff_cursor(nvim, 80)
+    nvim.lua_notify([[require('delta.diff').close_all()]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+    H.eq(nvim.lua("return vim.api.nvim_win_get_cursor(0)[1]"), 80)
+
+    open_file_diff(nvim)
+    set_right_diff_cursor(nvim, 20)
+    local tabs = nvim.lua_func(function()
+        return {
+            diff = vim.api.nvim_get_current_tabpage(),
+            origin = vim.api.nvim_list_tabpages()[1],
+        }
+    end)
+    nvim.lua_func(function(tab)
+        vim.api.nvim_set_current_tabpage(tab)
+    end, tabs.origin)
+    nvim.lua_func(function(tab)
+        require("delta.diff").close_file(tab)
+    end, tabs.diff)
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+    H.eq(nvim.lua("return vim.api.nvim_win_get_cursor(0)[1]"), 20)
+end
+
+T["does not move cursor when diff closes to another file"] = function()
+    local repo = init_cursor_sync_repo()
+    H.finally_rm(repo)
+
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+
+    H.nvim_set_cwd(nvim, repo)
+    setup_file_diff(nvim)
+    H.nvim_edit(nvim, repo .. "/file.txt")
+
+    open_file_diff(nvim)
+    local tabs = nvim.lua_func(function()
+        return {
+            diff = vim.api.nvim_get_current_tabpage(),
+            origin = vim.api.nvim_list_tabpages()[1],
+        }
+    end)
+    nvim.lua_func(function(origin_tab, other_path)
+        vim.api.nvim_set_current_tabpage(origin_tab)
+        vim.cmd.edit(vim.fn.fnameescape(other_path))
+        vim.api.nvim_win_set_cursor(0, { 5, 0 })
+    end, tabs.origin, repo .. "/other.txt")
+    nvim.lua_func(function(diff_tab)
+        vim.api.nvim_set_current_tabpage(diff_tab)
+    end, tabs.diff)
+    set_right_diff_cursor(nvim, 80)
+
+    nvim.lua_notify([[require('delta.diff').close_all()]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+
+    local closed = nvim.lua_func(function()
+        return {
+            name = vim.api.nvim_buf_get_name(0),
+            line = vim.api.nvim_win_get_cursor(0)[1],
+        }
+    end)
+    H.eq(vim.uv.fs_realpath(closed.name), vim.uv.fs_realpath(repo .. "/other.txt"))
+    H.eq(closed.line, 5)
 end
 
 T["aliases true file diff keymap hints to dialog mode"] = function()

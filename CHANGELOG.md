@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-06-22
+
+- **FIXED:** Sync side-by-side file diff cursor location when opening and closing diffs.
+
 ## 2026-06-21
 
 - **ADDED:** Add configurable side-by-side file diff keymap hints with `?` help, inline winbar hints, and disabled mode.

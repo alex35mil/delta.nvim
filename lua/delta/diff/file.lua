@@ -7,6 +7,7 @@ local Git = require("delta.git")
 local Highlights = require("delta.diff.highlights")
 local Keys = require("delta.keys")
 local Mode = require("delta.spotlight.mode")
+local Hunks = require("delta.spotlight.hunks")
 local Notify = require("delta.notify")
 local Paths = require("delta.spotlight.paths")
 
@@ -31,6 +32,7 @@ local DEFAULT_DIFF_CONTEXT = 6
 ---@field resolved_mode "unstaged"|"staged"
 ---@field source_bufid? delta.BufId
 ---@field source_changedtick? integer
+---@field source_cursor_line? integer
 ---@field used_source_buffer boolean
 ---@field context integer
 ---@field context_base integer
@@ -369,7 +371,130 @@ local function delete_buffers(state)
     end
 end
 
+---@param bufnr delta.BufId
+---@param line integer
+---@return integer
+local function clamp_buf_line(bufnr, line)
+    local line_count = math.max(vim.api.nvim_buf_line_count(bufnr), 1)
+    return math.max(1, math.min(line, line_count))
+end
+
+---@param old_lines string[]
+---@param new_lines string[]
+---@return { start_line: integer, end_line: integer }[]
+local function diff_hunk_groups(old_lines, new_lines)
+    local groups = {}
+    for _, segment in ipairs(Hunks.linematch_segments_from_lines(old_lines, new_lines)) do
+        groups[#groups + 1] = {
+            start_line = segment.start_line,
+            end_line = segment.end_line,
+        }
+    end
+    return groups
+end
+
+---@param groups { start_line: integer, end_line: integer }[]
+---@param line integer
+---@return integer?
+local function nearest_hunk_line(groups, line)
+    local best_line = nil
+    local best_distance = nil
+    for _, group in ipairs(groups) do
+        local candidate = line < group.start_line and group.start_line or group.end_line
+        local distance = math.abs(line - candidate)
+        if not best_distance or distance < best_distance then
+            best_line = candidate
+            best_distance = distance
+        end
+    end
+    return best_line
+end
+
+---@param winid delta.WinId
+---@param line integer
+---@return boolean
+local function line_is_folded(winid, line)
+    return vim.api.nvim_win_call(winid, function()
+        return vim.fn.foldclosed(line) ~= -1
+    end)
+end
+
+---@param winid delta.WinId
+---@param bufnr delta.BufId
+---@param line integer
+local function set_cursor_line(winid, bufnr, line)
+    if vim.api.nvim_win_is_valid(winid) then
+        pcall(vim.api.nvim_win_set_cursor, winid, { clamp_buf_line(bufnr, line), 0 })
+    end
+end
+
+---@param left_win delta.WinId
+---@param right_win delta.WinId
+---@param left_buf delta.BufId
+---@param right_buf delta.BufId
+---@param old_lines string[]
+---@param new_lines string[]
+---@param source_cursor_line integer?
+local function sync_open_cursor(left_win, right_win, left_buf, right_buf, old_lines, new_lines, source_cursor_line)
+    if not source_cursor_line then
+        return
+    end
+
+    local target_line = clamp_buf_line(right_buf, source_cursor_line)
+    if line_is_folded(right_win, target_line) then
+        target_line = nearest_hunk_line(diff_hunk_groups(old_lines, new_lines), target_line) or target_line
+    end
+
+    set_cursor_line(left_win, left_buf, target_line)
+    set_cursor_line(right_win, right_buf, target_line)
+end
+
 ---@param state delta.diff.file.State
+---@return delta.WinId?
+local function active_diff_win(state)
+    if vim.api.nvim_tabpage_is_valid(state.tab) then
+        local ok, tab_win = pcall(vim.api.nvim_tabpage_get_win, state.tab)
+        if
+            ok
+            and vim.api.nvim_win_is_valid(tab_win)
+            and (tab_win == state.left_win or tab_win == state.right_win)
+        then
+            return tab_win
+        end
+    end
+    if vim.api.nvim_win_is_valid(state.right_win) then
+        return state.right_win
+    end
+    if vim.api.nvim_win_is_valid(state.left_win) then
+        return state.left_win
+    end
+end
+
+---@param state delta.diff.file.State
+---@return integer?
+local function current_diff_line(state)
+    local winid = active_diff_win(state)
+    if not winid then
+        return nil
+    end
+    local ok, cursor = pcall(vim.api.nvim_win_get_cursor, winid)
+    return ok and cursor[1] or nil
+end
+
+---@param state delta.diff.file.State
+---@param line integer?
+local function restore_origin_cursor(state, line)
+    if not line or not vim.api.nvim_win_is_valid(state.origin_win) then
+        return
+    end
+    local bufnr = vim.api.nvim_win_get_buf(state.origin_win)
+    local origin_path = select(1, Paths.normalize(vim.api.nvim_buf_get_name(bufnr)))
+    if origin_path ~= state.path then
+        return
+    end
+    set_cursor_line(state.origin_win, bufnr, line)
+end
+
 local function cleanup(state)
     tabs[state.tab] = nil
     if state.augroup then
@@ -405,6 +530,7 @@ function M.close(tab)
         return
     end
     state.closing = true
+    local close_cursor_line = current_diff_line(state)
 
     if vim.api.nvim_tabpage_is_valid(state.tab) and #vim.api.nvim_list_tabpages() > 1 then
         pcall(vim.api.nvim_set_current_tabpage, state.tab)
@@ -419,6 +545,7 @@ function M.close(tab)
         pcall(vim.api.nvim_set_current_tabpage, state.origin_tab)
         if vim.api.nvim_win_is_valid(state.origin_win) then
             pcall(vim.api.nvim_set_current_win, state.origin_win)
+            restore_origin_cursor(state, close_cursor_line)
         end
     end
 end
@@ -782,6 +909,7 @@ end
 ---@param origin_win delta.WinId
 ---@param source_bufid? delta.BufId
 ---@param source_changedtick? integer
+---@param source_cursor_line? integer
 ---@param used_source_buffer boolean
 local function open_tab(
     path,
@@ -793,6 +921,7 @@ local function open_tab(
     origin_win,
     source_bufid,
     source_changedtick,
+    source_cursor_line,
     used_source_buffer
 )
     local file_config = (Config.options.diff or {}).file or {}
@@ -833,6 +962,8 @@ local function open_tab(
     setup_window(left_win, left_buf)
     setup_window(right_win, right_buf)
     vim.cmd("wincmd =")
+    vim.cmd("diffupdate")
+    sync_open_cursor(left_win, right_win, left_buf, right_buf, old_lines, new_lines, source_cursor_line)
 
     local state = {
         tab = tab,
@@ -847,6 +978,7 @@ local function open_tab(
         resolved_mode = resolved_mode,
         source_bufid = source_bufid,
         source_changedtick = source_changedtick,
+        source_cursor_line = source_cursor_line,
         used_source_buffer = used_source_buffer,
         context = context_base,
         context_base = context_base,
@@ -887,11 +1019,15 @@ function M.open(opts)
     local current_buf_lines = nil
     local source_bufid = nil
     local source_changedtick = nil
+    local source_cursor_line = nil
     local current_path, current_scratch = Paths.normalize(bufname)
     if current_path == normalized and not current_scratch and not scratch then
         source_bufid = bufid
         current_buf_lines = vim.api.nvim_buf_get_lines(bufid, 0, -1, false)
         source_changedtick = changedtick(bufid)
+        if vim.api.nvim_win_get_buf(origin_win) == bufid then
+            source_cursor_line = vim.api.nvim_win_get_cursor(origin_win)[1]
+        end
     end
 
     local requested = opts.mode or "auto"
@@ -922,6 +1058,7 @@ function M.open(opts)
                 origin_win,
                 source_bufid,
                 used_source_buffer and source_changedtick or nil,
+                source_cursor_line,
                 used_source_buffer
             )
         end

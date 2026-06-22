@@ -611,6 +611,8 @@ Available built-ins:
 
 `require("delta").diff.open_file()` opens the current file in a new native diff tab. `auto` mode shows unstaged changes first, then staged changes. Configure `diff.file.keys` for tab-local actions: close, stage/unstage file, reset file, and expand/shrink native diff context. By default, the file diff winbar shows `?=keymaps`; pressing `?` opens keymap help. The help dialog reuses `diff.file.keys.close` plus fallback close keys. Set `diff.file.keymap_hints = "winbar"` for full inline hints, or `false` to hide hints and bind no help key. `true` aliases the default dialog mode. If `?` conflicts with a file diff action key, the action key wins and the help binding/hint is omitted.
 
+Opening a file diff syncs to the source cursor line when visible, or to the nearest visible hunk when that line is folded by the diff context. Closing a file diff back to the same file restores the source cursor to the current diff location.
+
 Markdown file diffs enable wrapping and `linebreak` in both side-by-side panes for readability; other filetypes stay unwrapped.
 
 ```lua
