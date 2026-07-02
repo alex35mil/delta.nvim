@@ -94,6 +94,17 @@ local function reapply_wo()
 end
 
 ---@param lines string[]
+---@return boolean
+local function has_buffer_newlines(lines)
+    for _, line in ipairs(lines) do
+        if line:find("\n", 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+---@param lines string[]
 local function show_scratch(lines)
     if not preview or not vim.api.nvim_win_is_valid(preview.win) then
         return
@@ -154,6 +165,13 @@ function M.update(path)
         -- Load from disk into a scratch buffer.
         local ok, lines = pcall(vim.fn.readfile, path)
         if not ok then
+            show_scratch(PREVIEW_UNAVAILABLE)
+            return
+        end
+
+        -- Binary/NUL data can come back from readfile() as embedded newlines,
+        -- which nvim_buf_set_lines() rejects. Treat it as unsupported preview content.
+        if has_buffer_newlines(lines) then
             show_scratch(PREVIEW_UNAVAILABLE)
             return
         end

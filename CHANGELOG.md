@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-07-02
+
+- **FIXED:** Avoid picker preview errors on unsupported binary/image files.
+
 ## 2026-06-22
 
 - **FIXED:** Sync side-by-side file diff cursor location when opening and closing diffs.
