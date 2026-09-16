@@ -49,16 +49,9 @@ M.actions = require("delta.spotlight.actions")
 ---@type table<delta.WinId, delta.spotlight.WinState>
 local wins = {}
 
----@class delta.spotlight.PickerNav
----@field source_key string|false|nil
----@field opened_path string
----@field unstaged_paths string[]
----@field opened_index integer
-
 ---@class delta.spotlight.PickerContext
 ---@field path delta.FilePath
 ---@field section delta.picker.Section
----@field nav? delta.spotlight.PickerNav
 ---@field timestamp integer
 
 ---@class delta.spotlight.PickerOpenOpts
@@ -66,7 +59,6 @@ local wins = {}
 ---@field status delta.FileStatus
 ---@field cmd "edit"|"split"|"vsplit"
 ---@field spotlight boolean
----@field nav? delta.spotlight.PickerNav
 
 ---@class delta.spotlight.Buf
 ---@field buf delta.BufId Neovim buffer for this realization.
@@ -95,7 +87,6 @@ local wins = {}
 ---@field visible_hunks delta.Hunks Cached linematch-visible hunks for spotlight UI resolution/navigation.
 ---@field action_hunks delta.Hunks Cached contiguous full-text hunks for stage/reset target resolution.
 ---@field dirty? boolean True when cached git state may be stale after an index watcher event.
----@field picker_nav? delta.spotlight.PickerNav Picker navigation metadata associated with the source path.
 
 ---@class delta.spotlight.FileData
 ---@field status delta.FileStatus
@@ -108,7 +99,6 @@ local wins = {}
 ---@field path delta.FilePath Canonical file path used for git operations and buffer lookup.
 ---@field status "outsider"|"no_repo" Extra non-git status shown in the winbar.
 ---@field bufs delta.spotlight.Bufs Buffer realizations associated with this source path.
----@field picker_nav? delta.spotlight.PickerNav Picker navigation metadata associated with the source path.
 
 ---@alias delta.spotlight.FileState delta.spotlight.ManagedFileState|delta.spotlight.UnmanagedFileState
 
@@ -356,18 +346,13 @@ local function get_picker_context(winid, path)
 end
 
 ---@param winid delta.WinId
----@param file delta.spotlight.FileState
 ---@param path delta.FilePath
 ---@return boolean consumed
 ---@return delta.spotlight.PickerOverride? picker_override
-local function process_picker_context(winid, file, path)
+local function process_picker_context(winid, path)
     local context = get_picker_context(winid, path)
     if not context then
         return false, nil
-    end
-
-    if context.nav then
-        file.picker_nav = context.nav
     end
 
     picker_contexts[winid] = nil
@@ -387,7 +372,7 @@ local function sync_picker_context(winid, bufid)
         return
     end
 
-    local consumed, picker_override = process_picker_context(winid, file, path)
+    local consumed, picker_override = process_picker_context(winid, path)
     if consumed then
         win.picker_override = picker_override
         return
@@ -398,155 +383,49 @@ local function sync_picker_context(winid, bufid)
     end
 end
 
----@param source_key string|false|nil
----@return delta.SourceConfig|nil source
-local function resolve_picker_source(source_key)
-    if not source_key or source_key == "git" then
-        return Config.options.picker.sources.git
-    end
-    return Config.options.picker.sources[source_key]
-end
-
----@param entries string[]|fun(): string[]
----@return table<string, boolean>
-local function resolve_source_files(entries)
-    if type(entries) == "function" then
-        entries = entries()
+---@param path delta.FilePath
+---@param origin_win? delta.WinId Window to use as picker origin.
+---@return boolean scheduled
+---@return delta.FileStatus? status
+function M.reopen_picker_after_stage(path, origin_win)
+    if not Config.options.spotlight.reopen_picker_after_stage then
+        return false, nil
     end
 
-    local cwd = vim.fn.getcwd() .. "/"
-    local path_set = {}
-    for _, file in ipairs(entries) do
-        if file:sub(1, #cwd) == cwd then
-            path_set[file:sub(#cwd + 1)] = true
-        elseif not vim.startswith(file, "/") then
-            path_set[file] = true
+    local ok, status = Git.file_status(path)
+    if not ok or not status then
+        return false, nil
+    end
+
+    if status:has_unstaged() then
+        return false, status
+    end
+
+    vim.schedule(function()
+        local function reopen()
+            require("delta.picker.ui").reopen_after_stage({ staged_path = path })
         end
-    end
-    return path_set
-end
 
----@param source_key string|false|nil
----@param changed delta.ChangedFiles
----@return string[]
-local function get_unstaged_paths_for_source(source_key, changed)
-    local source = resolve_picker_source(source_key)
-    local unstaged = changed.unstaged
-
-    if source and source.files then
-        unstaged = Git.filter_by_paths(unstaged, resolve_source_files(source.files))
-    end
-
-    local paths = {}
-    for i, file in ipairs(unstaged) do
-        paths[i] = file.path
-    end
-    return paths
-end
-
----@param list string[]
----@return table<string, boolean>
-local function to_path_set(list)
-    local set = {}
-    for _, path in ipairs(list) do
-        set[path] = true
-    end
-    return set
-end
-
----@param nav delta.spotlight.PickerNav|nil
----@param current_unstaged string[]
----@return string?
-local function find_next_picker_path(nav, current_unstaged)
-    if not nav or not nav.opened_index then
-        return
-    end
-
-    local current_set = to_path_set(current_unstaged)
-    for i = nav.opened_index + 1, #nav.unstaged_paths do
-        local path = nav.unstaged_paths[i]
-        if current_set[path] then
-            return path
+        if origin_win and vim.api.nvim_win_is_valid(origin_win) then
+            vim.api.nvim_win_call(origin_win, reopen)
+        else
+            reopen()
         end
-    end
-    for i = nav.opened_index - 1, 1, -1 do
-        local path = nav.unstaged_paths[i]
-        if current_set[path] then
-            return path
-        end
-    end
-end
-
----@param changed delta.ChangedFiles
----@param nav delta.spotlight.PickerNav|nil
----@return string|delta.SourceDef|nil source
----@return string? preselect_path
-local function resolve_picker_reopen_target(changed, nav)
-    local current_unstaged = get_unstaged_paths_for_source(nav and nav.source_key or "git", changed)
-    local next_path = find_next_picker_path(nav, current_unstaged)
-    if next_path then
-        return nav and nav.source_key or "git", next_path
-    end
-
-    local keys = vim.tbl_keys(Config.options.picker.sources)
-    table.sort(keys)
-    table.insert(keys, 1, "git")
-
-    local seen = {}
-    local ordered_keys = {}
-    if nav and nav.source_key then
-        ordered_keys[#ordered_keys + 1] = nav.source_key
-        seen[nav.source_key] = true
-    else
-        ordered_keys[#ordered_keys + 1] = "git"
-        seen.git = true
-    end
-
-    for _, key in ipairs(keys) do
-        if not seen[key] then
-            ordered_keys[#ordered_keys + 1] = key
-            seen[key] = true
-        end
-    end
-
-    for _, key in ipairs(ordered_keys) do
-        local paths = get_unstaged_paths_for_source(key, changed)
-        if #paths > 0 then
-            return key, paths[1]
-        end
-    end
+    end)
+    return true, status
 end
 
 ---@param file delta.spotlight.FileState
 local function maybe_reopen_picker_after_stage(file)
     local mfile = as_managed_file(file)
-    if not Config.options.spotlight.reopen_picker_after_stage or not mfile then
+    if not mfile then
         return
     end
 
-    local ok, status = Git.file_status(mfile.path)
-    if not ok or not status then
-        return
+    local _, status = M.reopen_picker_after_stage(mfile.path)
+    if status then
+        mfile.status = status
     end
-
-    mfile.status = status
-    if status:has_unstaged() then
-        return
-    end
-
-    local cok, changed = Git.get_changed_files()
-    if not cok or not changed then
-        return
-    end
-
-    local source, preselect_path = resolve_picker_reopen_target(changed, file.picker_nav)
-    vim.schedule(function()
-        if preselect_path then
-            require("delta.picker").show({ source = source, preselect_path = preselect_path })
-        else
-            Notify.info("Everything is staged")
-        end
-    end)
 end
 
 --- Build the action context for a buffer.
@@ -1166,7 +1045,6 @@ local function refresh_file_state(path, source_bufid)
                 visible_hunks = file_data.visible_hunks,
                 action_hunks = file_data.action_hunks,
                 dirty = false,
-                picker_nav = current and current.picker_nav or nil,
             }
 
             if source_bufid ~= nil then
@@ -1186,7 +1064,6 @@ local function refresh_file_state(path, source_bufid)
             path = path,
             bufs = bufs,
             status = dataerr == "no_repo" and "no_repo" or "outsider",
-            picker_nav = current and current.picker_nav or nil,
         }
 
         if source_bufid ~= nil then
@@ -1205,7 +1082,6 @@ local function refresh_file_state(path, source_bufid)
         path = path,
         bufs = bufs,
         status = "no_repo",
-        picker_nav = current and current.picker_nav or nil,
     }
 
     if source_bufid ~= nil then
@@ -1715,10 +1591,10 @@ local function setup_autocmds()
 
                     local current_buf = vim.api.nvim_get_current_buf()
 
+                    local new_file = files[path]
+
                     -- If spotlight is active on this window and user is still on this buffer, render.
                     if win and bufid == current_buf then
-                        local new_file = files[path]
-
                         if not new_file then
                             Notify.error("File was not prepared on BufEnter. Path: " .. path)
                             return
@@ -2169,6 +2045,32 @@ function M.setup()
 end
 
 ---@param winid delta.WinId
+local function apply_picker_context_to_active_window(winid)
+    local win = wins[winid]
+    if not win or not vim.api.nvim_win_is_valid(winid) then
+        return
+    end
+
+    local bufid = vim.api.nvim_win_get_buf(winid)
+    local file = file_for_buf(bufid)
+    if not file then
+        return
+    end
+
+    sync_picker_context(winid, bufid)
+    win.resolved_mode = resolve_mode_for_file(file, win.requested_mode, win.picker_override)
+
+    local display = ensure_window_buf(winid, bufid, file, win.resolved_mode)
+    if not display then
+        return
+    end
+
+    render(winid, display.buf, { cursor = "nearest", trigger = "picker-context" })
+    setup_winhighlight(winid)
+    setup_local_keymaps(display.buf)
+end
+
+---@param winid delta.WinId
 ---@param path delta.FilePath
 ---@param opts delta.spotlight.PickerOpenOpts
 ---@return delta.WinId opened_winid
@@ -2187,17 +2089,21 @@ function M.open_picker_entry(winid, path, opts)
         target_path = Paths.scratch("deleted", path)
     end
 
-    picker_contexts[target_winid] = {
-        path = path,
-        section = opts.section,
-        nav = opts.nav,
-        timestamp = vim.uv.hrtime(),
-    }
-
     vim.api.nvim_win_call(winid, function()
         vim.cmd(opts.cmd .. " " .. vim.fn.fnameescape(target_path))
         target_winid = vim.api.nvim_get_current_win()
     end)
+
+    picker_contexts[target_winid] = {
+        path = path,
+        section = opts.section,
+        timestamp = vim.uv.hrtime(),
+    }
+    if wins[target_winid] then
+        Git.async(function()
+            apply_picker_context_to_active_window(target_winid)
+        end)
+    end
 
     return target_winid, opts.spotlight or target_path ~= path
 end
@@ -2251,7 +2157,7 @@ function M.ensure(mode)
         end
 
         local requested_mode = mode or "auto"
-        local _, picker_override = process_picker_context(winid, file, file.path)
+        local _, picker_override = process_picker_context(winid, file.path)
         local resolved_mode = resolve_mode_for_file(file, requested_mode, picker_override)
         local display = ensure_window_buf(winid, bufid, file, resolved_mode)
 

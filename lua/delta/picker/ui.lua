@@ -61,11 +61,19 @@ local sections = {
 ---@field source_keys (string|false)[] source key for each entry (false for inline sources)
 ---@field source_idx number current index in sources list
 ---@field preselect_path? string requested file path to preselect
+---@field reopen_after_stage_path? string staged path used to select next unstaged file after reopen
+---@field preselect_first_unstaged? boolean select first visible unstaged file after reopen
 ---@field preview_visible? boolean whether preview pane is showing
 ---@field layout? { row: number, col: number, width: number, height: number } picker layout dimensions
 
 ---@type delta.PickerState|nil
 local state = nil
+
+---@class delta.picker.ReopenMemory
+---@field source? string|delta.SourceDef
+
+---@type delta.picker.ReopenMemory
+local reopen_memory = {}
 
 --- Get the current source from state.
 ---@return delta.SourceConfig|delta.SourceDef|nil
@@ -78,19 +86,13 @@ local function current_source_key()
     return state and state.source_keys[state.source_idx]
 end
 
----@return string[]
-local function collect_unstaged_paths()
+local function remember_current_source()
     if not state then
-        return {}
+        return
     end
 
-    local paths = {}
-    for _, node in ipairs(state.nodes) do
-        if node and not node.is_dir and node.section == "unstaged" then
-            paths[#paths + 1] = node.path
-        end
-    end
-    return paths
+    local key = current_source_key()
+    reopen_memory.source = key ~= false and key or current_source()
 end
 
 ---@param path string
@@ -305,6 +307,38 @@ local function resolve_files(files)
     return set
 end
 
+---@param source delta.SourceConfig|delta.SourceDef|nil
+---@return table<string, boolean>?
+local function path_set_for_source(source)
+    if source and source.files then
+        return resolve_files(source.files)
+    end
+end
+
+---@param changed delta.ChangedFiles
+---@param source_idx integer
+---@return delta.FileEntry[] unstaged
+---@return delta.FileEntry[] staged
+---@return table<string, boolean>? path_set
+local function files_for_source(changed, source_idx)
+    local source = state and state.sources[source_idx]
+    local path_set = path_set_for_source(source)
+    if path_set then
+        return Git.filter_by_paths(changed.unstaged, path_set), Git.filter_by_paths(changed.staged, path_set), path_set
+    end
+    return changed.unstaged, changed.staged, nil
+end
+
+---@param unstaged delta.FileEntry[]
+---@param staged delta.FileEntry[]
+local function set_files(unstaged, staged)
+    if not state then
+        return
+    end
+    state.unstaged = unstaged
+    state.staged = staged
+end
+
 --- Fetch files for the current source.
 --- Must be called inside Git.async().
 ---@return boolean ok
@@ -318,19 +352,45 @@ local function refresh_files()
         return false
     end
 
-    local unstaged = result.unstaged
-    local staged = result.staged
+    set_files(files_for_source(result, state.source_idx))
+    return true
+end
 
-    local source = current_source()
-    if source and source.files then
-        local path_set = resolve_files(source.files)
-        unstaged = Git.filter_by_paths(unstaged, path_set)
-        staged = Git.filter_by_paths(staged, path_set)
+---@param staged_path string
+---@return boolean ok
+---@return boolean has_unstaged
+local function refresh_files_for_reopen(staged_path)
+    if not state then
+        return false, false
     end
 
-    state.unstaged = unstaged
-    state.staged = staged
-    return true
+    local ok, result = Git.get_changed_files()
+    if not ok then
+        return false, false
+    end
+
+    local unstaged, staged, path_set = files_for_source(result, state.source_idx)
+    if #unstaged > 0 then
+        set_files(unstaged, staged)
+        if path_set and not path_set[staged_path] then
+            state.reopen_after_stage_path = nil
+            state.preselect_first_unstaged = true
+        else
+            state.reopen_after_stage_path = staged_path
+            state.preselect_first_unstaged = false
+        end
+        return true, true
+    end
+
+    if state.source_idx ~= 1 and #result.unstaged > 0 then
+        state.source_idx = 1
+        set_files(result.unstaged, result.staged)
+        state.reopen_after_stage_path = nil
+        state.preselect_first_unstaged = true
+        return true, true
+    end
+
+    return true, #result.unstaged > 0
 end
 
 ---@return string
@@ -815,6 +875,30 @@ local function preselect_first_visible_node(targets)
     return false
 end
 
+---@param nodes (delta.Node|false)[]
+---@param idx integer
+---@param section delta.picker.Section
+---@param files_only? boolean
+---@return { path: string, section: delta.picker.Section }[]
+local function next_visible_targets_in_nodes(nodes, idx, section, files_only)
+    local targets = {}
+    for i = idx + 1, #nodes do
+        local node = nodes[i]
+        if node and (not files_only or not node.is_dir) and node.section == section then
+            targets[#targets + 1] = { path = node.path, section = node.section }
+        end
+    end
+
+    for i = idx - 1, 1, -1 do
+        local node = nodes[i]
+        if node and (not files_only or not node.is_dir) and node.section == section then
+            targets[#targets + 1] = { path = node.path, section = node.section }
+        end
+    end
+
+    return targets
+end
+
 ---@param idx integer
 ---@param section delta.picker.Section
 ---@return { path: string, section: delta.picker.Section }[]
@@ -822,23 +906,63 @@ local function next_visible_targets(idx, section)
     if not state then
         return {}
     end
+    return next_visible_targets_in_nodes(state.nodes, idx, section)
+end
 
-    local targets = {}
-    for i = idx + 1, #state.nodes do
-        local node = state.nodes[i]
-        if node and node.section == section then
-            targets[#targets + 1] = { path = node.path, section = node.section }
+local function preselect_first_unstaged()
+    if not state then
+        return false
+    end
+
+    for i, node in ipairs(state.nodes) do
+        if node and not node.is_dir and node.section == "unstaged" then
+            state.cursor_idx = i
+            update_cursor_highlight()
+            highlight_branch()
+            return true
         end
     end
 
-    for i = idx - 1, 1, -1 do
-        local node = state.nodes[i]
-        if node and node.section == section then
-            targets[#targets + 1] = { path = node.path, section = node.section }
+    return false
+end
+
+---@param staged_path string
+---@return boolean
+local function preselect_after_stage(staged_path)
+    if not state then
+        return false
+    end
+
+    local staged_present = false
+    local files = {}
+    for i, file in ipairs(state.unstaged) do
+        files[i] = file
+        if file.path == staged_path then
+            staged_present = true
+        end
+    end
+    if not staged_present then
+        files[#files + 1] = { path = staged_path }
+    end
+
+    local tree = Tree.build(files, "unstaged")
+    Tree.apply_collapsed(tree, state.collapsed)
+
+    local nodes = {}
+    local lines = {}
+    local highlights = {}
+    local parent_map = {}
+    for i, child in ipairs(tree.children) do
+        flatten(child, {}, i == #tree.children, nodes, lines, highlights, parent_map, nil)
+    end
+
+    for i, node in ipairs(nodes) do
+        if node and not node.is_dir and node.path == staged_path then
+            return preselect_first_visible_node(next_visible_targets_in_nodes(nodes, i, "unstaged", true))
         end
     end
 
-    return targets
+    return false
 end
 
 --- Render the tree into the buffer.
@@ -1028,8 +1152,6 @@ local function make_context()
     end
 
     local origin_win = state and state.origin_win or nil
-    local source_key = current_source_key()
-    local unstaged_paths = collect_unstaged_paths()
 
     return {
         node = node,
@@ -1101,6 +1223,7 @@ local function make_context()
                 if not refresh_files() then
                     return
                 end
+                remember_current_source()
                 state.collapsed = {}
                 state.cursor_idx = 1
                 resize_layout()
@@ -1119,6 +1242,7 @@ local function make_context()
                 if not refresh_files() then
                     return
                 end
+                remember_current_source()
                 state.collapsed = {}
                 state.cursor_idx = 1
                 resize_layout()
@@ -1247,26 +1371,12 @@ local function make_context()
 
             opts = opts or { cmd = "edit", spotlight = false }
             local winid = find_target_win(origin_win)
-            local nav = nil
-
-            for i, path in ipairs(unstaged_paths) do
-                if path == node.path then
-                    nav = {
-                        source_key = source_key,
-                        opened_path = node.path,
-                        unstaged_paths = unstaged_paths,
-                        opened_index = i,
-                    }
-                    break
-                end
-            end
 
             local opened_winid, enable_spotlight = Spotlight.open_picker_entry(winid, node.path, {
                 section = node.section,
                 status = node.status,
                 cmd = opts.cmd,
                 spotlight = opts.spotlight,
-                nav = nav,
             })
 
             M.close()
@@ -1484,13 +1594,28 @@ function M.show(opts)
         source_keys = source_keys,
         source_idx = source_idx,
         preselect_path = opts and opts.preselect_path or nil,
+        reopen_after_stage_path = opts and opts.reopen_after_stage_path or nil,
+        preselect_first_unstaged = false,
     }
 
     Git.async(function()
-        if not refresh_files() then
+        local ok, has_unstaged
+        if state.reopen_after_stage_path then
+            ok, has_unstaged = refresh_files_for_reopen(state.reopen_after_stage_path)
+            if not ok then
+                state = nil
+                return
+            end
+            if not has_unstaged then
+                state = nil
+                Notify.info("Everything is staged")
+                return
+            end
+        elseif not refresh_files() then
             state = nil
             return
         end
+        remember_current_source()
 
         local input_buf, input_win, tree_buf, tree_win, layout = create_float()
 
@@ -1510,11 +1635,18 @@ function M.show(opts)
 
         -- Preselect requested path first, otherwise current buffer's file if it's in the list.
         local did_preselect = false
-        if state.preselect_path then
+        if state.reopen_after_stage_path then
+            did_preselect = preselect_after_stage(state.reopen_after_stage_path)
+            if not did_preselect then
+                did_preselect = preselect_first_unstaged()
+            end
+        elseif state.preselect_first_unstaged then
+            did_preselect = preselect_first_unstaged()
+        elseif state.preselect_path then
             did_preselect = preselect_path(state.preselect_path)
         end
 
-        if not did_preselect then
+        if not did_preselect and not state.preselect_first_unstaged then
             local current_buf = vim.api.nvim_win_get_buf(origin_win)
             local current_path, current_section = current_buffer_preselect_target(current_buf)
             if current_path then
@@ -1589,6 +1721,12 @@ function M.close()
             vim.api.nvim_win_close(s.input_win, true)
         end
     end
+end
+
+--- Reopen the picker after staging a file.
+---@param opts { staged_path: string }
+function M.reopen_after_stage(opts)
+    M.show({ source = reopen_memory.source or "git", reopen_after_stage_path = opts.staged_path })
 end
 
 --- Toggle the picker.

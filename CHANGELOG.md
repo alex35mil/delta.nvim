@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-09-16
+
+- **FIXED:** Reopen the picker after staging from side-by-side file diffs when `spotlight.reopen_picker_after_stage` is enabled.
+
 ## 2026-07-02
 
 - **FIXED:** Avoid picker preview errors on unsupported binary/image files.

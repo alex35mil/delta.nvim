@@ -10,6 +10,7 @@ local Mode = require("delta.spotlight.mode")
 local Hunks = require("delta.spotlight.hunks")
 local Notify = require("delta.notify")
 local Paths = require("delta.spotlight.paths")
+local Spotlight = require("delta.spotlight.core")
 
 local DEFAULT_DIFF_CONTEXT = 6
 
@@ -753,7 +754,9 @@ local function toggle_stage_file(state, close_after)
             Notify.error(err or "Failed to toggle file stage")
             return
         end
-        if close_after then
+        local did_stage_unstaged = state.resolved_mode == "unstaged"
+        local did_reopen = did_stage_unstaged and Spotlight.reopen_picker_after_stage(state.path, state.origin_win)
+        if close_after or did_reopen then
             M.close(state.tab)
         else
             refresh_state(state)

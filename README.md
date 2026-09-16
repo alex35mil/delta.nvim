@@ -500,7 +500,7 @@ require("delta").picker.show({
 
 Spotlight focuses the current window on diff hunks by folding away unchanged lines. It supports file-level and hunk-level stage/unstage and reset operations.
 
-If `spotlight.reopen_picker_after_stage = true`, fully staging a file from spotlight can reopen the picker and preselect the next unstaged file. It is disabled by default to follow the principle of least surprise, but enabling it can make review workflows much smoother.
+If `spotlight.reopen_picker_after_stage = true`, fully staging a file through spotlight or a side-by-side file diff can reopen the picker and preselect the next unstaged file. It is disabled by default to follow the principle of least surprise, but enabling it can make review workflows much smoother.
 
 When `spotlight.toggle_stage_hunk` or `spotlight.reset_hunk` runs on a modified buffer, delta needs to save the file first so the operation matches Git's worktree view. By default delta asks for confirmation; set `spotlight.autosave_before_stage = true` to save automatically.
 
@@ -660,7 +660,7 @@ vim.api.nvim_create_autocmd("User", {
 
 ### Review workflow
 
-This is already mentioned in the configuration section, but it's worth a dedicated tip. If you use delta primarily to walk through changes file-by-file, the `reopen_picker_after_stage` option turns the picker + spotlight into a focused review loop: open the picker, land on a spotlighted file, stage hunks or the whole file, and the picker automatically reopens with the next unstaged file preselected.
+This is already mentioned in the configuration section, but it's worth a dedicated tip. If you use delta primarily to walk through changes file-by-file, the `reopen_picker_after_stage` option turns the picker, spotlight, and side-by-side file diff into a focused review loop: open the picker, land on a file, stage hunks or the whole file, and the picker automatically reopens with the next unstaged file preselected.
 
 ```lua
 require("delta").setup({
