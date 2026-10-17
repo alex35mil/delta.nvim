@@ -42,11 +42,7 @@ local sections = {
 ---@field parent_map table<number, number>
 ---@field section_lines table<number, boolean>
 
----@class delta.PickerState
----@field input_buf delta.BufId
----@field input_win delta.WinId
----@field tree_buf delta.BufId
----@field tree_win delta.WinId
+---@class delta.picker.Instance
 ---@field nodes (delta.Node|false)[] flat visible list (false for section headers/spacers)
 ---@field unstaged delta.FileEntry[]
 ---@field staged delta.FileEntry[]
@@ -63,10 +59,20 @@ local sections = {
 ---@field preselect_path? string requested file path to preselect
 ---@field reopen_after_stage_path? string staged path used to select next unstaged file after reopen
 ---@field preselect_first_unstaged? boolean select first visible unstaged file after reopen
----@field preview_visible? boolean whether preview pane is showing
----@field layout? { row: number, col: number, width: number, height: number } picker layout dimensions
 
----@type delta.PickerState|nil
+---@class delta.picker.LoadingState: delta.picker.Instance
+---@field phase "loading"
+
+---@class delta.PickerState: delta.picker.Instance
+---@field phase "ready"
+---@field input_buf delta.BufId
+---@field input_win delta.WinId
+---@field tree_buf delta.BufId
+---@field tree_win delta.WinId
+---@field preview_visible boolean whether preview pane is showing
+---@field layout { row: number, col: number, width: number, height: number } picker layout dimensions
+
+---@type delta.picker.LoadingState|delta.PickerState|nil
 local state = nil
 
 ---@class delta.picker.ReopenMemory
@@ -316,12 +322,11 @@ local function path_set_for_source(source)
 end
 
 ---@param changed delta.ChangedFiles
----@param source_idx integer
+---@param source delta.SourceConfig|delta.SourceDef
 ---@return delta.FileEntry[] unstaged
 ---@return delta.FileEntry[] staged
 ---@return table<string, boolean>? path_set
-local function files_for_source(changed, source_idx)
-    local source = state and state.sources[source_idx]
+local function files_for_source(changed, source)
     local path_set = path_set_for_source(source)
     if path_set then
         return Git.filter_by_paths(changed.unstaged, path_set), Git.filter_by_paths(changed.staged, path_set), path_set
@@ -329,64 +334,64 @@ local function files_for_source(changed, source_idx)
     return changed.unstaged, changed.staged, nil
 end
 
+---@param s delta.picker.Instance
 ---@param unstaged delta.FileEntry[]
 ---@param staged delta.FileEntry[]
-local function set_files(unstaged, staged)
-    if not state then
-        return
-    end
-    state.unstaged = unstaged
-    state.staged = staged
+local function set_files(s, unstaged, staged)
+    s.unstaged = unstaged
+    s.staged = staged
 end
 
 --- Fetch files for the current source.
 --- Must be called inside Git.async().
+---@param s delta.picker.Instance
 ---@return boolean ok
-local function refresh_files()
-    if not state then
+local function refresh_files(s)
+    if state ~= s then
         return false
     end
 
     local ok, result = Git.get_changed_files()
-    if not ok then
+    if state ~= s or not ok then
         return false
     end
 
-    set_files(files_for_source(result, state.source_idx))
+    set_files(s, files_for_source(result, s.sources[s.source_idx]))
     return true
 end
 
+---@param s delta.picker.Instance
 ---@param staged_path string
 ---@return boolean ok
 ---@return boolean has_unstaged
-local function refresh_files_for_reopen(staged_path)
-    if not state then
+local function refresh_files_for_reopen(s, staged_path)
+    if state ~= s then
         return false, false
     end
 
     local ok, result = Git.get_changed_files()
-    if not ok then
+    if state ~= s or not ok then
         return false, false
     end
 
-    local unstaged, staged, path_set = files_for_source(result, state.source_idx)
+    local unstaged, staged, path_set = files_for_source(result, s.sources[s.source_idx])
     if #unstaged > 0 then
-        set_files(unstaged, staged)
+        set_files(s, unstaged, staged)
         if path_set and not path_set[staged_path] then
-            state.reopen_after_stage_path = nil
-            state.preselect_first_unstaged = true
+            s.reopen_after_stage_path = nil
+            s.preselect_first_unstaged = true
         else
-            state.reopen_after_stage_path = staged_path
-            state.preselect_first_unstaged = false
+            s.reopen_after_stage_path = staged_path
+            s.preselect_first_unstaged = false
         end
         return true, true
     end
 
-    if state.source_idx ~= 1 and #result.unstaged > 0 then
-        state.source_idx = 1
-        set_files(result.unstaged, result.staged)
-        state.reopen_after_stage_path = nil
-        state.preselect_first_unstaged = true
+    if s.source_idx ~= 1 and #result.unstaged > 0 then
+        s.source_idx = 1
+        set_files(s, result.unstaged, result.staged)
+        s.reopen_after_stage_path = nil
+        s.preselect_first_unstaged = true
         return true, true
     end
 
@@ -1145,6 +1150,7 @@ end
 --- Build the action context passed to action handlers.
 ---@return delta.picker.ActionContext
 local function make_context()
+    local s = state
     local node = state and state.nodes[state.cursor_idx]
     -- Normalize false (section header placeholder) to nil.
     if not node then
@@ -1153,7 +1159,7 @@ local function make_context()
 
     local origin_win = state and state.origin_win or nil
 
-    return {
+    local context = {
         node = node,
         move = function(step)
             move_cursor(step)
@@ -1220,7 +1226,7 @@ local function make_context()
             local prompt = vim.fn.prompt_getprompt(state.input_buf) or ""
             vim.api.nvim_buf_set_lines(state.input_buf, 0, -1, false, { prompt })
             Git.async(function()
-                if not refresh_files() then
+                if not refresh_files(s) then
                     return
                 end
                 remember_current_source()
@@ -1239,7 +1245,7 @@ local function make_context()
             local prompt = vim.fn.prompt_getprompt(state.input_buf) or ""
             vim.api.nvim_buf_set_lines(state.input_buf, 0, -1, false, { prompt })
             Git.async(function()
-                if not refresh_files() then
+                if not refresh_files(s) then
                     return
                 end
                 remember_current_source()
@@ -1267,7 +1273,7 @@ local function make_context()
                         ok = Git.stage(node.path)
                     end
                     if ok then
-                        if not refresh_files() then
+                        if not refresh_files(s) then
                             return
                         end
                         render()
@@ -1330,7 +1336,7 @@ local function make_context()
                     end
                 end
 
-                if not refresh_files() then
+                if not refresh_files(s) then
                     return
                 end
 
@@ -1392,26 +1398,42 @@ local function make_context()
             M.close()
         end,
     }
+
+    -- Action contexts can be retained by custom handlers. Their operations belong
+    -- to this instance, including callbacks composed from those operations.
+    for name, action in pairs(context) do
+        if type(action) == "function" then
+            context[name] = function(...)
+                if state ~= s then
+                    return
+                end
+                return action(...)
+            end
+        end
+    end
+    return context
 end
 
 --- Actions
 
 --- Execute an action handler.
+---@param s delta.picker.LoadingState|delta.PickerState
 ---@param handler delta.picker.ActionHandler
-local function execute_action(handler)
-    if not state then
+local function execute_action(s, handler)
+    if state ~= s or s.phase ~= "ready" then
         return
     end
     handler(make_context())
 end
 
 --- Create the floating windows (input + tree) and set up keymaps.
+---@param s delta.picker.LoadingState|delta.PickerState
 ---@return delta.BufId input_buf
 ---@return delta.WinId input_win
 ---@return delta.BufId tree_buf
 ---@return delta.WinId tree_win
 ---@return { row: number, col: number, width: number, height: number } layout
-local function create_float()
+local function create_float(s)
     local opts = Config.options.picker
     local layout = opts.layout
     local main = layout.main
@@ -1495,7 +1517,7 @@ local function create_float()
                     modes = default_modes
                 end
                 vim.keymap.set(modes, lhs, function()
-                    execute_action(handler)
+                    execute_action(s, handler)
                 end, map_opts)
             end
         end
@@ -1505,7 +1527,7 @@ local function create_float()
     vim.api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
         buffer = input_buf,
         callback = function()
-            if state then
+            if state == s and s.phase == "ready" then
                 render()
                 if get_query() ~= "" then
                     state.cursor_idx = first_file_idx(state.nodes)
@@ -1574,12 +1596,10 @@ function M.show(opts)
         end
     end
 
-    -- Initialize state early so refresh_files can use it.
-    state = {
-        input_buf = 0,
-        input_win = 0,
-        tree_buf = 0,
-        tree_win = 0,
+    -- Loading owns an instance, but no Neovim windows or buffers yet.
+    ---@type delta.picker.LoadingState|delta.PickerState
+    local s = {
+        phase = "loading",
         origin_win = origin_win,
         nodes = {},
         unstaged = {},
@@ -1597,34 +1617,38 @@ function M.show(opts)
         reopen_after_stage_path = opts and opts.reopen_after_stage_path or nil,
         preselect_first_unstaged = false,
     }
+    state = s
 
     Git.async(function()
         local ok, has_unstaged
-        if state.reopen_after_stage_path then
-            ok, has_unstaged = refresh_files_for_reopen(state.reopen_after_stage_path)
-            if not ok then
-                state = nil
-                return
-            end
-            if not has_unstaged then
-                state = nil
-                Notify.info("Everything is staged")
-                return
-            end
-        elseif not refresh_files() then
+        if s.reopen_after_stage_path then
+            ok, has_unstaged = refresh_files_for_reopen(s, s.reopen_after_stage_path)
+        else
+            ok = refresh_files(s)
+        end
+        if state ~= s then
+            return
+        end
+        if not ok then
             state = nil
+            return
+        end
+        if has_unstaged == false then
+            state = nil
+            Notify.info("Everything is staged")
             return
         end
         remember_current_source()
 
-        local input_buf, input_win, tree_buf, tree_win, layout = create_float()
+        local input_buf, input_win, tree_buf, tree_win, layout = create_float(s)
 
-        state.input_buf = input_buf
-        state.input_win = input_win
-        state.tree_buf = tree_buf
-        state.tree_win = tree_win
-        state.layout = layout
-        state.preview_visible = false
+        s.input_buf = input_buf
+        s.input_win = input_win
+        s.tree_buf = tree_buf
+        s.tree_win = tree_win
+        s.layout = layout
+        s.preview_visible = false
+        s.phase = "ready"
 
         render()
 
@@ -1656,7 +1680,9 @@ function M.show(opts)
 
         if Config.options.picker.initial_mode == "i" then
             vim.schedule(function()
-                vim.cmd("startinsert")
+                if state == s then
+                    vim.cmd("startinsert")
+                end
             end)
         end
 
@@ -1665,7 +1691,7 @@ function M.show(opts)
             buffer = input_buf,
             callback = function()
                 vim.schedule(function()
-                    if not state then
+                    if state ~= s then
                         return
                     end
                     local cur_win = vim.api.nvim_get_current_win()
@@ -1686,10 +1712,10 @@ function M.show(opts)
         vim.api.nvim_create_autocmd("CursorMoved", {
             buffer = tree_buf,
             callback = function()
-                if not state then
+                if state ~= s then
                     return
                 end
-                local cursor = vim.api.nvim_win_get_cursor(state.tree_win)
+                local cursor = vim.api.nvim_win_get_cursor(s.tree_win)
                 local idx = cursor[1]
                 if idx >= 1 and idx <= #state.nodes and state.nodes[idx] and idx ~= state.cursor_idx then
                     state.cursor_idx = idx
@@ -1698,8 +1724,8 @@ function M.show(opts)
                 end
                 -- Return focus to input.
                 vim.schedule(function()
-                    if state and vim.api.nvim_win_is_valid(state.input_win) then
-                        vim.api.nvim_set_current_win(state.input_win)
+                    if state == s and vim.api.nvim_win_is_valid(s.input_win) then
+                        vim.api.nvim_set_current_win(s.input_win)
                     end
                 end)
             end,
@@ -1712,6 +1738,9 @@ function M.close()
     if state then
         local s = state
         state = nil
+        if s.phase == "loading" then
+            return
+        end
         Preview.hide()
         vim.cmd("stopinsert")
         if vim.api.nvim_win_is_valid(s.tree_win) then

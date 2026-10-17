@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-17
+
+- **FIXED:** Preserve editing windows when closing the picker during loading, and prevent pending work from affecting a reopened picker.
+
 ## 2026-09-16
 
 - **FIXED:** Reopen the picker after staging from side-by-side file diffs when `spotlight.reopen_picker_after_stage` is enabled.
