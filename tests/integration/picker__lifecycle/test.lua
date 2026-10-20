@@ -146,14 +146,16 @@ T["close during initial loading preserves editors and discards completion"] = fu
         hold_status = true
         picker.show({ source = 'git' })
         assert(picker.is_open() and picker_state().phase == 'loading')
+    ]])
+    wait_status(nvim, 1)
+    nvim.lua([[
         picker.show()
         assert(#status_requests == 1, 'show while loading started another load')
         picker.close()
         assert_editors()
         assert(not picker.is_open())
+        release_status(1)
     ]])
-    wait_status(nvim, 1)
-    nvim.lua("release_status(1)")
     close_and_check(nvim)
 end
 
@@ -173,8 +175,15 @@ end
 T["obsolete reopen-after-stage load cannot affect replacement"] = function()
     local nvim = start()
     nvim.lua([[
+        local file
+        require('delta.git').async(function()
+            local ok, ref = require('delta.git').resolve_file(vim.fn.getcwd() .. '/a.txt')
+            assert(ok)
+            file = ref
+        end)
+        assert(vim.wait(5000, function() return file ~= nil end, 10))
         hold_status = true
-        require('delta.picker.ui').reopen_after_stage({ staged_path = 'a.txt' })
+        require('delta.picker.ui').reopen_after_stage({ file = file })
         picker.close()
         picker.show({ source = 'review' })
     ]])
@@ -234,11 +243,13 @@ for _, order in ipairs({ "old-first", "new-first", "old-failure" }) do
         nvim.lua([[
             hold_status = true
             picker.toggle({ source = 'git' })
+        ]])
+        wait_status(nvim, 1)
+        nvim.lua([[
             picker.toggle({ source = 'git' })
             assert_editors()
             picker.toggle({ source = 'review', preselect_path = 'a.txt' })
         ]])
-        wait_status(nvim, 1)
         wait_status(nvim, 2)
         if order == "old-first" then
             nvim.lua([[

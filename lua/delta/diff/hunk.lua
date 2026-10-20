@@ -1381,6 +1381,9 @@ local function resolve_current_hunk_opts(opts)
 
     local cursor = vim.api.nvim_win_get_cursor(winid)
     local default_hunks, default_side, file = Spotlight.hunks_for_buf(bufid)
+    if not (opts and opts.path) and file and file.kind == "managed" then
+        path = file.file.path
+    end
     local side = opts and opts.side or default_side or Paths.visible_side(bufname)
     local hunks = opts and opts.hunks or default_hunks
     local _, scratch = Paths.normalize(bufname)

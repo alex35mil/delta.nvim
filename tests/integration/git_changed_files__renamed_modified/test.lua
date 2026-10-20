@@ -19,8 +19,12 @@ T["uses new path for renamed and modified files"] = function()
     local result = nvim.lua_func(function()
         local done = false
         local ok, changed
-        require("delta.git").async(function()
-            ok, changed = require("delta.git").get_changed_files()
+        local Git = require("delta.git")
+        local cwd = vim.fn.getcwd()
+        Git.async(function()
+            local found, repo = Git.resolve_repository(cwd)
+            assert(found)
+            ok, changed = Git.get_changed_files(repo)
             done = true
         end)
 

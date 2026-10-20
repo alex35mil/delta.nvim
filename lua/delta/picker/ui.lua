@@ -5,6 +5,7 @@ local M = {}
 
 local Config = require("delta.config")
 local Git = require("delta.git")
+local Repository = require("delta.repository")
 local Highlights = require("delta.picker.highlights")
 local Layout = require("delta.picker.layout")
 local Notify = require("delta.notify")
@@ -43,6 +44,7 @@ local sections = {
 ---@field section_lines table<number, boolean>
 
 ---@class delta.picker.Instance
+---@field repo delta.Repository
 ---@field nodes (delta.Node|false)[] flat visible list (false for section headers/spacers)
 ---@field unstaged delta.FileEntry[]
 ---@field staged delta.FileEntry[]
@@ -62,6 +64,7 @@ local sections = {
 
 ---@class delta.picker.LoadingState: delta.picker.Instance
 ---@field phase "loading"
+---@field repo? delta.Repository Not yet resolved during discovery.
 
 ---@class delta.PickerState: delta.picker.Instance
 ---@field phase "ready"
@@ -158,9 +161,14 @@ local function find_modified_open_paths(paths)
     return modified
 end
 
+---@class delta.picker.ResetTarget
+---@field path string
+---@field file delta.RepositoryFile
+---@field target delta.ResetTarget
+
 ---@param node delta.Node
 ---@param section delta.picker.Section
----@return { path: string, target: delta.ResetTarget }[]
+---@return delta.picker.ResetTarget[]
 local function collect_reset_targets(node, section)
     if not state then
         return {}
@@ -173,7 +181,7 @@ local function collect_reset_targets(node, section)
     for _, file in ipairs(source) do
         if file.path == node.path or (prefix and vim.startswith(file.path, prefix)) then
             local target = section == "staged" and "head" or (file.status:is_untracked() and "delete" or "index")
-            targets[#targets + 1] = { path = file.path, target = target }
+            targets[#targets + 1] = { path = file.path, file = file.file, target = target }
         end
     end
 
@@ -184,7 +192,7 @@ local function collect_reset_targets(node, section)
 end
 
 ---@param section delta.picker.Section
----@param targets { path: string, target: delta.ResetTarget }[]
+---@param targets delta.picker.ResetTarget[]
 ---@return string
 local function reset_confirm_message(section, targets)
     local count = #targets
@@ -294,40 +302,39 @@ end
 
 --- Resolve files from a source's files field.
 ---@param files string[]|fun(): string[]
+---@param repo delta.Repository
 ---@return table<string, boolean>
-local function resolve_files(files)
+local function resolve_files(files, repo)
     if type(files) == "function" then
         files = files()
     end
-    local cwd = vim.fn.getcwd() .. "/"
     local set = {}
-    for _, f in ipairs(files) do
-        -- Normalize absolute paths to relative (git status uses relative paths).
-        -- Skip files outside the current working directory.
-        if f:sub(1, #cwd) == cwd then
-            set[f:sub(#cwd + 1)] = true
-        elseif not vim.startswith(f, "/") then
-            set[f] = true
+    for _, path in ipairs(files) do
+        local file = Repository.file(repo, path)
+        if file then
+            set[file.path] = true
         end
     end
     return set
 end
 
 ---@param source delta.SourceConfig|delta.SourceDef|nil
+---@param repo delta.Repository
 ---@return table<string, boolean>?
-local function path_set_for_source(source)
+local function path_set_for_source(source, repo)
     if source and source.files then
-        return resolve_files(source.files)
+        return resolve_files(source.files, repo)
     end
 end
 
 ---@param changed delta.ChangedFiles
 ---@param source delta.SourceConfig|delta.SourceDef
+---@param repo delta.Repository
 ---@return delta.FileEntry[] unstaged
 ---@return delta.FileEntry[] staged
 ---@return table<string, boolean>? path_set
-local function files_for_source(changed, source)
-    local path_set = path_set_for_source(source)
+local function files_for_source(changed, source, repo)
+    local path_set = path_set_for_source(source, repo)
     if path_set then
         return Git.filter_by_paths(changed.unstaged, path_set), Git.filter_by_paths(changed.staged, path_set), path_set
     end
@@ -351,12 +358,12 @@ local function refresh_files(s)
         return false
     end
 
-    local ok, result = Git.get_changed_files()
+    local ok, result = Git.get_changed_files(s.repo)
     if state ~= s or not ok then
         return false
     end
 
-    set_files(s, files_for_source(result, s.sources[s.source_idx]))
+    set_files(s, files_for_source(result, s.sources[s.source_idx], s.repo))
     return true
 end
 
@@ -369,12 +376,12 @@ local function refresh_files_for_reopen(s, staged_path)
         return false, false
     end
 
-    local ok, result = Git.get_changed_files()
+    local ok, result = Git.get_changed_files(s.repo)
     if state ~= s or not ok then
         return false, false
     end
 
-    local unstaged, staged, path_set = files_for_source(result, s.sources[s.source_idx])
+    local unstaged, staged, path_set = files_for_source(result, s.sources[s.source_idx], s.repo)
     if #unstaged > 0 then
         set_files(s, unstaged, staged)
         if path_set and not path_set[staged_path] then
@@ -579,7 +586,7 @@ local function update_preview()
         Preview.clear()
         return
     end
-    Preview.update(node.path)
+    Preview.update(node.file)
 end
 
 --- Show the preview pane. Tree width stays the same, total block widens and recenters.
@@ -1264,13 +1271,14 @@ local function make_context()
             local is_staged = state.staged_start > 0 and state.cursor_idx >= state.staged_start
             local next_targets = next_visible_targets(state.cursor_idx, node.section)
 
+            local file = node.is_dir and assert(Repository.file(s.repo, node.path)) or node.file
             local function do_toggle()
                 Git.async(function()
                     local ok
                     if is_staged then
-                        ok = Git.unstage(node.path)
+                        ok = Git.unstage(file)
                     else
-                        ok = Git.stage(node.path)
+                        ok = Git.stage(file)
                     end
                     if ok then
                         if not refresh_files(s) then
@@ -1308,7 +1316,7 @@ local function make_context()
             end
 
             local modified = find_modified_open_paths(vim.tbl_map(function(item)
-                return item.path
+                return item.file.absolute_path
             end, targets))
             if #modified > 0 then
                 Notify.error("Reset aborted: file has unsaved changes: " .. modified[1])
@@ -1326,7 +1334,7 @@ local function make_context()
             Git.async(function()
                 local undo_hints = {}
                 for _, item in ipairs(targets) do
-                    local ok, undo_hint, err = Git.reset_file(item.path, item.target)
+                    local ok, undo_hint, err = Git.reset_file(item.file, item.target)
                     if not ok then
                         Notify.error(err or ("Failed to reset file: " .. item.path))
                         return
@@ -1378,7 +1386,7 @@ local function make_context()
             opts = opts or { cmd = "edit", spotlight = false }
             local winid = find_target_win(origin_win)
 
-            local opened_winid, enable_spotlight = Spotlight.open_picker_entry(winid, node.path, {
+            local opened_winid, enable_spotlight = Spotlight.open_picker_entry(winid, node.file.absolute_path, {
                 section = node.section,
                 status = node.status,
                 cmd = opts.cmd,
@@ -1554,6 +1562,12 @@ function M.show(opts)
 
     local source = resolve_source(opts and opts.source)
     local origin_win = vim.api.nvim_get_current_win()
+    local origin_buf = vim.api.nvim_win_get_buf(origin_win)
+    local cwd = vim.fn.getcwd()
+    local origin_path = Repository.buffer_path(origin_buf)
+    local _, origin_section = current_buffer_preselect_target(origin_buf)
+    local bound_file = Repository.buffer_file(origin_buf)
+    local reopen_file = opts and opts.reopen_after_stage_file
 
     -- Build ordered source list: git first, then other config sources, then inline (if any).
     local sources = {}
@@ -1601,6 +1615,7 @@ function M.show(opts)
     local s = {
         phase = "loading",
         origin_win = origin_win,
+        repo = reopen_file and reopen_file.repo or bound_file and bound_file.repo or nil,
         nodes = {},
         unstaged = {},
         staged = {},
@@ -1614,12 +1629,30 @@ function M.show(opts)
         source_keys = source_keys,
         source_idx = source_idx,
         preselect_path = opts and opts.preselect_path or nil,
-        reopen_after_stage_path = opts and opts.reopen_after_stage_path or nil,
+        reopen_after_stage_path = reopen_file and reopen_file.path or nil,
         preselect_first_unstaged = false,
     }
     state = s
 
     Git.async(function()
+        if not s.repo then
+            local ok, repo, err = Git.select_repository(origin_path, cwd)
+            if state ~= s then
+                return
+            end
+            if not ok then
+                state = nil
+                if err == "no_repo" then
+                    Notify.info("Not in a Git repository")
+                end
+                return
+            end
+            s.repo = repo
+        end
+        if s.preselect_path then
+            local selected = Repository.file(s.repo, s.preselect_path)
+            s.preselect_path = selected and selected.path or nil
+        end
         local ok, has_unstaged
         if s.reopen_after_stage_path then
             ok, has_unstaged = refresh_files_for_reopen(s, s.reopen_after_stage_path)
@@ -1671,10 +1704,9 @@ function M.show(opts)
         end
 
         if not did_preselect and not state.preselect_first_unstaged then
-            local current_buf = vim.api.nvim_win_get_buf(origin_win)
-            local current_path, current_section = current_buffer_preselect_target(current_buf)
-            if current_path then
-                preselect_path(current_path, current_section)
+            local current = origin_path and Repository.file(s.repo, origin_path) or nil
+            if current then
+                preselect_path(current.path, origin_section)
             end
         end
 
@@ -1753,9 +1785,9 @@ function M.close()
 end
 
 --- Reopen the picker after staging a file.
----@param opts { staged_path: string }
+---@param opts { file: delta.RepositoryFile }
 function M.reopen_after_stage(opts)
-    M.show({ source = reopen_memory.source or "git", reopen_after_stage_path = opts.staged_path })
+    M.show({ source = reopen_memory.source or "git", reopen_after_stage_file = opts.file })
 end
 
 --- Toggle the picker.

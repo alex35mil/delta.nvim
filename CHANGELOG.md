@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-20
+
+- **ADDED:** Review and stage changes in the current file's repository, including nested checkouts, submodules, and linked worktrees, without changing Neovim's working directory.
+
 ## 2026-10-17
 
 - **FIXED:** Preserve editing windows when closing the picker during loading, and prevent pending work from affecting a reopened picker.

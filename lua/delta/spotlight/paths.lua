@@ -1,6 +1,6 @@
 local M = {}
-
-M.scheme = "delta://"
+local Repository = require("delta.repository")
+local Uri = require("delta.uri")
 
 ---@param path string
 ---@return delta.FilePath?
@@ -10,24 +10,24 @@ function M.normalize(path)
         return nil
     end
 
-    local scratch_content, scratch_path = path:match("^" .. M.scheme .. "([^/]+)/(.+)$")
+    local scratch_content, scratch_path = Uri.parse(path)
     if scratch_content == "staged" or scratch_content == "deleted" then
-        return scratch_path, scratch_content
+        return Repository.canonical(Repository.absolute(scratch_path, vim.fn.getcwd())), scratch_content
     end
 
-    local rel = vim.fn.fnamemodify(path, ":.")
-    if rel == "" then
+    if path:match("^%a[%w+.-]*://") then
+        -- Other views may identify a repository file without being Spotlight sources.
         return nil
     end
 
-    return rel
+    return Repository.canonical(Repository.absolute(path, vim.fn.getcwd()))
 end
 
 ---@param content_type delta.spotlight.ScratchBufContentType
 ---@param path delta.FilePath
 ---@return string
 function M.scratch(content_type, path)
-    return M.scheme .. content_type .. "/" .. path
+    return Uri.name(content_type, path)
 end
 
 ---@param path string
