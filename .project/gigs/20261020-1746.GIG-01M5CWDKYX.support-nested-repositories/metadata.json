@@ -1,0 +1,46 @@
+{
+  "id": "GIG-01M5CWDKYX",
+  "rawId": "01M5CWDKYX",
+  "slug": "support-nested-repositories",
+  "title": "Support nested repositories using the current file’s repository",
+  "createdAt": "2026-10-20T14:46:03.997Z",
+  "phase": "selfReview",
+  "branch": {
+    "state": "ready",
+    "name": "gig-01m5cwdkyx-support-nested-repositories",
+    "start": "main",
+    "target": "main",
+    "source": "generated"
+  },
+  "integrations": [
+    {
+      "role": "tracker",
+      "provider": "github",
+      "repository": {
+        "owner": "alex35mil",
+        "repo": "delta.nvim"
+      },
+      "state": "bound",
+      "external": {
+        "issueNumber": 5
+      }
+    },
+    {
+      "role": "forge",
+      "provider": "github",
+      "repository": {
+        "owner": "alex35mil",
+        "repo": "delta.nvim"
+      },
+      "head": "gig-01m5cwdkyx-support-nested-repositories",
+      "target": "main",
+      "state": "intent"
+    }
+  ],
+  "authority": {
+    "kind": "tracker",
+    "provider": "github"
+  },
+  "entity": "gig",
+  "kind": "feature"
+}

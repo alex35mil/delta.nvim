@@ -4,6 +4,8 @@ local M = {}
 
 local Config = require("delta.config")
 local Git = require("delta.git")
+local Repository = require("delta.repository")
+local Uri = require("delta.uri")
 local Highlights = require("delta.diff.highlights")
 local Keys = require("delta.keys")
 local Mode = require("delta.spotlight.mode")
@@ -28,7 +30,8 @@ local DEFAULT_DIFF_CONTEXT = 6
 ---@field right_win delta.WinId
 ---@field left_buf delta.BufId
 ---@field right_buf delta.BufId
----@field path string
+---@field path string Absolute file identity.
+---@field file delta.RepositoryFile
 ---@field requested_mode delta.diff.FileMode
 ---@field resolved_mode "unstaged"|"staged"
 ---@field source_bufid? delta.BufId
@@ -113,14 +116,16 @@ local function same_lines(left, right)
     return true
 end
 
----@param path string
+---@param file delta.RepositoryFile
 ---@param label string
 ---@param lines string[]
 ---@return delta.BufId
-local function create_side_buffer(path, label, lines)
+local function create_side_buffer(file, label, lines)
+    local path = file.path
     next_id = next_id + 1
     local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_name(bufnr, "delta://diff/" .. next_id .. "/" .. label .. "/" .. path)
+    Repository.bind_buffer(bufnr, file)
+    vim.api.nvim_buf_set_name(bufnr, Uri.name("diff", next_id, label, file.absolute_path))
     vim.bo[bufnr].buftype = "nofile"
     vim.bo[bufnr].bufhidden = "wipe"
     vim.bo[bufnr].swapfile = false
@@ -290,7 +295,7 @@ local function open_keymap_dialog(state)
     local col = math.max(0, math.floor((vim.o.columns - width) / 2))
 
     local buf = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_name(buf, "delta://diff/keymaps/" .. buf)
+    vim.api.nvim_buf_set_name(buf, Uri.name("diff", "keymaps", buf))
     vim.bo[buf].buftype = "nofile"
     vim.bo[buf].bufhidden = "wipe"
     vim.bo[buf].swapfile = false
@@ -346,7 +351,7 @@ local function render_winbars(state)
     local hint_label = "%#" .. Highlights.groups.file_winbar_hint .. "#"
 
     if vim.api.nvim_win_is_valid(state.left_win) then
-        vim.wo[state.left_win].winbar = base .. " " .. base_label .. old_label .. ": " .. state.path .. base
+        vim.wo[state.left_win].winbar = base .. " " .. base_label .. old_label .. ": " .. state.file.path .. base
     end
     if vim.api.nvim_win_is_valid(state.right_win) then
         vim.wo[state.right_win].winbar = base
@@ -354,7 +359,7 @@ local function render_winbars(state)
             .. current_label
             .. new_label
             .. ": "
-            .. state.path
+            .. state.file.path
             .. base
             .. hint_label
             .. hint_text
@@ -489,7 +494,7 @@ local function restore_origin_cursor(state, line)
         return
     end
     local bufnr = vim.api.nvim_win_get_buf(state.origin_win)
-    local origin_path = select(1, Paths.normalize(vim.api.nvim_buf_get_name(bufnr)))
+    local origin_path = Repository.buffer_path(bufnr)
     if origin_path ~= state.path then
         return
     end
@@ -623,7 +628,7 @@ local function resolve_file_diff_mode(path, requested, status)
     return status:is_untracked() and "unstaged" or Mode.resolve(path, "auto", status)
 end
 
----@param path string
+---@param file delta.RepositoryFile
 ---@param requested delta.diff.FileMode
 ---@param current_buf_lines? string[]
 ---@return boolean ok
@@ -631,8 +636,9 @@ end
 ---@return string[]? old_lines
 ---@return string[]? new_lines
 ---@return boolean used_source_buffer
-local function load_diff_lines(path, requested, current_buf_lines)
-    local ok, status, errkind = Git.file_status(path)
+local function load_diff_lines(file, requested, current_buf_lines)
+    local path = file.absolute_path
+    local ok, status, errkind = Git.file_status(file)
     if not ok or not status then
         if errkind == "no_repo" then
             Notify.info("No git repository")
@@ -654,15 +660,15 @@ local function load_diff_lines(path, requested, current_buf_lines)
     local new_ok, new_lines, new_err
     local used_source_buffer = false
     if mode == "staged" then
-        old_ok, old_lines, old_err = Git.get_head_lines(path)
-        new_ok, new_lines, new_err = Git.get_index_lines(path)
+        old_ok, old_lines, old_err = Git.get_head_lines(file)
+        new_ok, new_lines, new_err = Git.get_index_lines(file)
     else
-        old_ok, old_lines, old_err = Git.get_index_lines(path)
+        old_ok, old_lines, old_err = Git.get_index_lines(file)
         if current_buf_lines then
             new_ok, new_lines = true, copy_lines(current_buf_lines)
             used_source_buffer = true
         else
-            new_ok, new_lines, new_err = Git.get_worktree_lines(path)
+            new_ok, new_lines, new_err = Git.get_worktree_lines(file)
         end
     end
 
@@ -703,7 +709,7 @@ local function refresh_state(state)
     Git.async(function()
         local source_lines, source_changedtick = current_source_lines(state)
         local ok, resolved, old_lines, new_lines, used_source_buffer =
-            load_diff_lines(state.path, state.requested_mode, source_lines)
+            load_diff_lines(state.file, state.requested_mode, source_lines)
         if not ok then
             return
         end
@@ -745,9 +751,9 @@ local function toggle_stage_file(state, close_after)
     Git.async(function()
         local ok, err
         if state.resolved_mode == "unstaged" then
-            ok, err = Git.stage(state.path)
+            ok, err = Git.stage(state.file)
         else
-            ok, err = Git.unstage(state.path)
+            ok, err = Git.unstage(state.file)
         end
         state.mutating = false
         if not ok then
@@ -755,7 +761,7 @@ local function toggle_stage_file(state, close_after)
             return
         end
         local did_stage_unstaged = state.resolved_mode == "unstaged"
-        local did_reopen = did_stage_unstaged and Spotlight.reopen_picker_after_stage(state.path, state.origin_win)
+        local did_reopen = did_stage_unstaged and Spotlight.reopen_picker_after_stage(state.file, state.origin_win)
         if close_after or did_reopen then
             M.close(state.tab)
         else
@@ -774,7 +780,7 @@ local function reset_file(state, close_after)
 
     state.mutating = true
     Git.async(function()
-        local ok_status, status = Git.file_status(state.path)
+        local ok_status, status = Git.file_status(state.file)
         if not ok_status or not status then
             state.mutating = false
             return
@@ -818,7 +824,7 @@ local function reset_file(state, close_after)
             end
         end
 
-        local ok, undo_hint, err = Git.reset_file(state.path, target)
+        local ok, undo_hint, err = Git.reset_file(state.file, target)
         state.mutating = false
         if not ok then
             Notify.error(err or ("Failed to reset file: " .. state.path))
@@ -903,7 +909,7 @@ local function attach(state)
     })
 end
 
----@param path string
+---@param file delta.RepositoryFile
 ---@param requested_mode delta.diff.FileMode
 ---@param resolved_mode "unstaged"|"staged"
 ---@param old_lines string[]
@@ -915,7 +921,7 @@ end
 ---@param source_cursor_line? integer
 ---@param used_source_buffer boolean
 local function open_tab(
-    path,
+    file,
     requested_mode,
     resolved_mode,
     old_lines,
@@ -942,8 +948,8 @@ local function open_tab(
 
     local old_label = resolved_mode == "staged" and "HEAD" or "index"
     local new_label = resolved_mode == "staged" and "index" or "worktree"
-    local left_buf = create_side_buffer(path, old_label, old_lines)
-    local right_buf = create_side_buffer(path, new_label, new_lines)
+    local left_buf = create_side_buffer(file, old_label, old_lines)
+    local right_buf = create_side_buffer(file, new_label, new_lines)
 
     vim.cmd("tabnew")
     local tab = vim.api.nvim_get_current_tabpage()
@@ -976,7 +982,8 @@ local function open_tab(
         right_win = right_win,
         left_buf = left_buf,
         right_buf = right_buf,
-        path = path,
+        path = file.absolute_path,
+        file = file,
         requested_mode = requested_mode,
         resolved_mode = resolved_mode,
         source_bufid = source_bufid,
@@ -1012,8 +1019,14 @@ function M.open(opts)
         return
     end
 
+    local cwd = vim.fn.getcwd()
     local bufname = vim.api.nvim_buf_get_name(bufid)
-    local normalized, scratch = Paths.normalize(opts.path or bufname)
+    local bound_file = Repository.buffer_file(bufid)
+    local target = opts.path or (bound_file and bound_file.absolute_path) or bufname
+    local normalized, scratch = Paths.normalize(target)
+    if bound_file and bound_file.absolute_path ~= normalized then
+        bound_file = nil
+    end
     if not normalized then
         Notify.info("No file path for current buffer")
         return
@@ -1024,7 +1037,13 @@ function M.open(opts)
     local source_changedtick = nil
     local source_cursor_line = nil
     local current_path, current_scratch = Paths.normalize(bufname)
-    if current_path == normalized and not current_scratch and not scratch then
+    if
+        current_path == normalized
+        and not current_scratch
+        and not scratch
+        and vim.bo[bufid].buftype == ""
+        and not bound_file
+    then
         source_bufid = bufid
         current_buf_lines = vim.api.nvim_buf_get_lines(bufid, 0, -1, false)
         source_changedtick = changedtick(bufid)
@@ -1040,8 +1059,20 @@ function M.open(opts)
     end
 
     Git.async(function()
+        local file = bound_file
+        if not file then
+            local found, ref, err = Git.resolve_file(normalized)
+            if not found then
+                if err == "no_repo" then
+                    local in_repo = Git.resolve_repository(cwd)
+                    Notify.info(in_repo and "Current file is outside a git repository" or "No git repository")
+                end
+                return
+            end
+            file = ref
+        end
         local ok, resolved, old_lines, new_lines, used_source_buffer =
-            load_diff_lines(normalized, requested, current_buf_lines)
+            load_diff_lines(file, requested, current_buf_lines)
         if not ok then
             return
         end
@@ -1052,7 +1083,7 @@ function M.open(opts)
 
         if vim.api.nvim_win_is_valid(origin_win) then
             open_tab(
-                normalized,
+                file,
                 requested,
                 resolved,
                 old_lines or {},

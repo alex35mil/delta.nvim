@@ -18,10 +18,12 @@ end
 local function make_context()
     local win = vim.api.nvim_get_current_win()
     local buf = vim.api.nvim_get_current_buf()
+    local file = require("delta.repository").buffer_file(buf)
+    local context = require("delta.spotlight.core").context(buf)
     return {
         win = win,
         buf = buf,
-        path = vim.fn.expand("%:."),
+        path = file and file.path or context.path,
         open_hunk_diff = function()
             M.open_hunk({ winid = win, bufid = buf })
         end,

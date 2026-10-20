@@ -5,9 +5,11 @@
 local M = {}
 
 local Notify = require("delta.notify")
+local Repository = require("delta.repository")
 
 ---@class delta.FileEntry
----@field path string
+---@field path string Repository-relative display path.
+---@field file delta.RepositoryFile
 ---@field status delta.FileStatus
 
 ---@class delta.HunkNode
@@ -171,10 +173,11 @@ end
 local step_fns = {}
 
 --- Run a git command asynchronously. Must be called from a coroutine (via M.async).
+---@param cwd string Explicit repository/discovery directory.
 ---@param args string[] command arguments (without "git" prefix)
 ---@param opts? { stdin?: string } optional stdin input
 ---@return vim.SystemCompleted
-local function run(args, opts)
+local function run(cwd, args, opts)
     local co = coroutine.running()
     assert(co, "git.run must be called inside git.async()")
 
@@ -182,7 +185,12 @@ local function run(args, opts)
     assert(step, "git.run: no step function for coroutine")
 
     local cmd = vim.list_extend({ "git" }, args)
-    local sys_opts = { text = true }
+    assert(type(cwd) == "string" and vim.startswith(cwd, "/"), "git.run requires an absolute cwd")
+    local sys_opts = { text = true, cwd = cwd }
+    if args[1] == "status" then
+        -- Inspection must not take optional index-refresh locks from actual Git mutations.
+        sys_opts.env = { GIT_OPTIONAL_LOCKS = "0" }
+    end
     if opts and opts.stdin then
         sys_opts.stdin = opts.stdin
     end
@@ -231,13 +239,15 @@ local function classify_context_error(stderr)
     end
 end
 
---- Get the .git directory path for the current repo.
---- Must be called inside M.async().
+--- Discover a repository from an explicit directory. Must run inside M.async().
+---@param directory string
 ---@return boolean ok
----@return string? gitdir
+---@return delta.Repository? repo
 ---@return delta.GitContextErrorKind? errkind
-function M.git_dir()
-    local result = run({ "rev-parse", "--absolute-git-dir" })
+function M.resolve_repository(directory)
+    assert(vim.startswith(directory, "/"), "repository discovery requires an absolute directory")
+    directory = Repository.directory(directory)
+    local result = run(directory, { "rev-parse", "--show-toplevel", "--absolute-git-dir" })
     if result.code ~= 0 then
         local errkind = classify_context_error(result.stderr)
         if errkind then
@@ -246,7 +256,38 @@ function M.git_dir()
         Notify.error("git rev-parse: " .. (result.stderr or "failed"))
         return false, nil, nil
     end
-    return true, vim.trim(result.stdout or ""), nil
+    local paths = vim.split(vim.trim(result.stdout or ""), "\n", { plain = true })
+    assert(#paths == 2, "git rev-parse returned an invalid repository context")
+    return true, { root = paths[1], gitdir = paths[2] }, nil
+end
+
+---@param absolute_path string
+---@return boolean ok
+---@return delta.RepositoryFile? file
+---@return delta.GitContextErrorKind? errkind
+function M.resolve_file(absolute_path)
+    assert(vim.startswith(absolute_path, "/"), "file discovery requires an absolute path")
+    local ok, repo, err = M.resolve_repository(vim.fs.dirname(absolute_path))
+    if not ok then
+        return false, nil, err
+    end
+    return true, assert(Repository.file(repo, absolute_path), "file is outside its discovered repository"), nil
+end
+
+--- Current-file-first picker selection; only a missing repo permits cwd fallback.
+---@param absolute_path string?
+---@param cwd string Invocation cwd, captured before yielding.
+---@return boolean ok
+---@return delta.Repository? repo
+---@return delta.GitContextErrorKind? errkind
+function M.select_repository(absolute_path, cwd)
+    if absolute_path then
+        local ok, repo, err = M.resolve_repository(vim.fs.dirname(absolute_path))
+        if ok or err ~= "no_repo" then
+            return ok, repo, err
+        end
+    end
+    return M.resolve_repository(cwd)
 end
 
 --- Parse `git status --porcelain -z` output.
@@ -280,8 +321,9 @@ end
 --- Must be called inside M.async().
 ---@return boolean ok
 ---@return delta.ChangedFiles result
-function M.get_changed_files()
-    local result = run({ "status", "--porcelain", "-z", "-u" })
+---@param repo delta.Repository
+function M.get_changed_files(repo)
+    local result = run(repo.root, { "status", "--porcelain", "-z", "-u" })
     if result.code ~= 0 then
         Notify.error("git status: " .. (result.stderr or "unknown error"))
         return false, { unstaged = {}, staged = {} }
@@ -293,16 +335,15 @@ function M.get_changed_files()
     for _, entry in ipairs(parse_porcelain_z(result.stdout or "")) do
         local x = entry.x
         local y = entry.y
-        local path = entry.path
-
+        local file = assert(Repository.file(repo, entry.path))
         local status = FileStatus.new(x, y)
 
         if y ~= " " and y ~= "!" then
-            table.insert(unstaged, { path = path, status = status })
+            table.insert(unstaged, { path = file.path, file = file, status = status })
         end
 
         if x ~= " " and x ~= "?" and x ~= "!" then
-            table.insert(staged, { path = path, status = status })
+            table.insert(staged, { path = file.path, file = file, status = status })
         end
     end
 
@@ -325,12 +366,12 @@ end
 
 --- Get the git status of a file.
 --- Must be called inside M.async().
----@param path string
+---@param file delta.RepositoryFile
 ---@return boolean ok
 ---@return delta.FileStatus|nil status
 ---@return delta.GitContextErrorKind? errkind
-function M.file_status(path)
-    local result = run({ "status", "--porcelain", "-z", "--", path })
+function M.file_status(file)
+    local result = run(file.repo.root, { "status", "--porcelain", "-z", "--", file.path })
     if result.code ~= 0 then
         local errkind = classify_context_error(result.stderr)
         if errkind then
@@ -352,11 +393,11 @@ end
 --- Staging
 
 --- Stage a file. Must be called inside M.async().
----@param path string
+---@param file delta.RepositoryFile
 ---@return boolean success
 ---@return string? error
-function M.stage(path)
-    local result = run({ "add", "--", path })
+function M.stage(file)
+    local result = run(file.repo.root, { "add", "--", file.path })
     if result.code ~= 0 then
         return false, result.stderr
     end
@@ -364,11 +405,11 @@ function M.stage(path)
 end
 
 --- Unstage a file. Must be called inside M.async().
----@param path string
+---@param file delta.RepositoryFile
 ---@return boolean success
 ---@return string? error
-function M.unstage(path)
-    local result = run({ "reset", "HEAD", "--", path })
+function M.unstage(file)
+    local result = run(file.repo.root, { "reset", "HEAD", "--", file.path })
     if result.code ~= 0 then
         return false, result.stderr
     end
@@ -379,16 +420,16 @@ end
 
 --- Store the current worktree file contents as a blob for best-effort undo hints.
 --- Must be called inside M.async(). Missing files simply return nil.
----@param path string
+---@param file delta.RepositoryFile
 ---@return boolean ok
 ---@return string? blob
 ---@return string? error
-function M.snapshot_worktree_blob(path)
-    if vim.fn.filereadable(path) == 0 then
+function M.snapshot_worktree_blob(file)
+    if vim.fn.filereadable(file.absolute_path) == 0 then
         return true, nil, nil
     end
 
-    local result = run({ "hash-object", "-w", "--", path })
+    local result = run(file.repo.root, { "hash-object", "-w", "--", file.path })
     if result.code ~= 0 then
         return false, nil, result.stderr
     end
@@ -396,33 +437,38 @@ function M.snapshot_worktree_blob(path)
     return true, vim.trim(result.stdout or ""), nil
 end
 
----@param path string
+---@param file delta.RepositoryFile
 ---@param blob string
 ---@return string
-function M.undo_hint_for_blob(path, blob)
-    return "git show " .. blob .. " > " .. vim.fn.shellescape(path)
+function M.undo_hint_for_blob(file, blob)
+    return "git -C "
+        .. vim.fn.shellescape(file.repo.root)
+        .. " show "
+        .. blob
+        .. " > "
+        .. vim.fn.shellescape(file.absolute_path)
 end
 
 --- Reset a file to the requested baseline.
 --- Must be called inside M.async().
----@param path string
+---@param file delta.RepositoryFile
 ---@param target delta.ResetTarget
 ---@return boolean success
 ---@return string? undo_hint
 ---@return string? error
-function M.reset_file(path, target)
-    local ok_blob, blob, blob_err = M.snapshot_worktree_blob(path)
+function M.reset_file(file, target)
+    local ok_blob, blob, blob_err = M.snapshot_worktree_blob(file)
     if not ok_blob then
         return false, nil, blob_err
     end
 
     local result
     if target == "index" then
-        result = run({ "restore", "--worktree", "--", path })
+        result = run(file.repo.root, { "restore", "--worktree", "--", file.path })
     elseif target == "head" then
-        result = run({ "restore", "--source=HEAD", "--staged", "--worktree", "--", path })
+        result = run(file.repo.root, { "restore", "--source=HEAD", "--staged", "--worktree", "--", file.path })
     elseif target == "delete" then
-        result = run({ "clean", "-f", "--", path })
+        result = run(file.repo.root, { "clean", "-f", "--", file.path })
     else
         return false, nil, "invalid reset target"
     end
@@ -431,7 +477,7 @@ function M.reset_file(path, target)
         return false, nil, result.stderr
     end
 
-    local undo_hint = blob and M.undo_hint_for_blob(path, blob) or nil
+    local undo_hint = blob and M.undo_hint_for_blob(file, blob) or nil
     return true, undo_hint, nil
 end
 
@@ -690,14 +736,15 @@ end
 
 --- Get diff file header + structured hunks for a file.
 --- Must be called inside M.async().
----@param path string
+---@param file delta.RepositoryFile
 ---@param staged boolean
 ---@return boolean ok
 ---@return string[] file_header
 ---@return delta.Hunk[] hunks
 ---@return string? error
-function M.get_patch_data(path, staged)
-    local result = run(diff_args(path, staged))
+function M.get_patch_data(file, staged)
+    local path = file.path
+    local result = run(file.repo.root, diff_args(path, staged))
     if result.code ~= 0 then
         return false, {}, {}, result.stderr
     end
@@ -716,17 +763,17 @@ function M.get_patch_data(path, staged)
 end
 
 --- Get diff hunks for a file. Must be called inside M.async().
----@param path string
+---@param file delta.RepositoryFile
 ---@return boolean ok
 ---@return delta.Hunks hunks
-function M.get_diff_hunks(path)
-    local sok, _, staged, serr = M.get_patch_data(path, true)
+function M.get_diff_hunks(file)
+    local sok, _, staged, serr = M.get_patch_data(file, true)
     if not sok then
         Notify.error("git diff --cached: " .. (serr or "failed"))
         return false, { staged = {}, unstaged = {} }
     end
 
-    local uok, _, unstaged, uerr = M.get_patch_data(path, false)
+    local uok, _, unstaged, uerr = M.get_patch_data(file, false)
     if not uok then
         Notify.error("git diff: " .. (uerr or "failed"))
         return false, { staged = {}, unstaged = {} }
@@ -737,11 +784,12 @@ end
 
 --- Get staged file contents from the git index.
 --- Must be called inside M.async().
----@param path string
+---@param file delta.RepositoryFile
 ---@return boolean ok
 ---@return string? text
-function M.get_staged_file(path)
-    local result = run({ "show", ":" .. path })
+function M.get_staged_file(file)
+    local path = file.path
+    local result = run(file.repo.root, { "show", ":" .. path })
     if result.code ~= 0 then
         Notify.error("git show :" .. path .. ": " .. (result.stderr or "failed"))
         return false, nil
@@ -752,11 +800,12 @@ end
 
 --- Get committed file contents from HEAD.
 --- Must be called inside M.async().
----@param path string
+---@param file delta.RepositoryFile
 ---@return boolean ok
 ---@return string? text
-function M.get_head_file(path)
-    local result = run({ "show", "HEAD:" .. path })
+function M.get_head_file(file)
+    local path = file.path
+    local result = run(file.repo.root, { "show", "HEAD:" .. path })
     if result.code ~= 0 then
         Notify.error("git show HEAD:" .. path .. ": " .. (result.stderr or "failed"))
         return false, nil
@@ -774,6 +823,7 @@ local function is_missing_blob(_, stderr)
     end
 
     return stderr:match("does not exist in") ~= nil
+        or stderr:find("does not exist (neither on disk nor in the index)", 1, true) ~= nil
         or stderr:match("exists on disk, but not in") ~= nil
         or stderr:match("not in the index") ~= nil
         or stderr:match("invalid object name 'HEAD'") ~= nil
@@ -781,12 +831,13 @@ local function is_missing_blob(_, stderr)
         or stderr:match("unknown revision or path not in the working tree") ~= nil
 end
 
+---@param repo delta.Repository
 ---@param args string[]
 ---@return boolean ok
 ---@return string[]? lines
 ---@return string? error
-local function get_show_lines(args)
-    local result = run(args)
+local function get_show_lines(repo, args)
+    local result = run(repo.root, args)
     if result.code == 0 then
         return true, split_text_lines(result.stdout or "")
     end
@@ -801,30 +852,31 @@ end
 
 --- Get file contents from the index as lines. Missing files resolve to an empty list.
 --- Must be called inside M.async().
----@param path string
+---@param file delta.RepositoryFile
 ---@return boolean ok
 ---@return string[]? lines
 ---@return string? error
-function M.get_index_lines(path)
-    return get_show_lines({ "show", ":" .. path })
+function M.get_index_lines(file)
+    return get_show_lines(file.repo, { "show", ":" .. file.path })
 end
 
 --- Get file contents from HEAD as lines. Missing files resolve to an empty list.
 --- Must be called inside M.async().
----@param path string
+---@param file delta.RepositoryFile
 ---@return boolean ok
 ---@return string[]? lines
 ---@return string? error
-function M.get_head_lines(path)
-    return get_show_lines({ "show", "HEAD:" .. path })
+function M.get_head_lines(file)
+    return get_show_lines(file.repo, { "show", "HEAD:" .. file.path })
 end
 
 --- Get worktree file contents as lines. Missing files resolve to an empty list.
----@param path string
+---@param file delta.RepositoryFile
 ---@return boolean ok
 ---@return string[]? lines
 ---@return string? error
-function M.get_worktree_lines(path)
+function M.get_worktree_lines(file)
+    local path = file.absolute_path
     if vim.fn.filereadable(path) == 0 then
         return true, {}
     end
@@ -1104,11 +1156,12 @@ end
 ---@field cached? boolean defaults to true (apply to index)
 
 --- Apply a patch string. Must be called inside M.async().
+---@param repo delta.Repository
 ---@param patch string
 ---@param opts? delta.ApplyPatchOpts
 ---@return boolean success
 ---@return string? error
-function M.apply_patch(patch, opts)
+function M.apply_patch(repo, patch, opts)
     opts = opts or {}
 
     local args = { "apply", "--unidiff-zero" }
@@ -1118,7 +1171,7 @@ function M.apply_patch(patch, opts)
     if opts.reverse then
         table.insert(args, "--reverse")
     end
-    local result = run(args, { stdin = patch })
+    local result = run(repo.root, args, { stdin = patch })
     if result.code ~= 0 then
         return false, result.stderr
     end

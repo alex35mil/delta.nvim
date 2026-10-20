@@ -126,8 +126,9 @@ local function show_scratch(lines)
 end
 
 --- Load a file into the preview. Uses the existing buffer if loaded, otherwise reads from disk.
----@param path string
-function M.update(path)
+---@param file delta.RepositoryFile
+function M.update(file)
+    local path = file.absolute_path
     if not preview or not vim.api.nvim_win_is_valid(preview.win) then
         return
     end
@@ -147,14 +148,13 @@ function M.update(path)
             relative = "editor",
             row = vim.api.nvim_win_get_position(win)[1],
             col = vim.api.nvim_win_get_position(win)[2],
-            title = preview_cfg.title(path),
+            title = preview_cfg.title(file.path),
             title_pos = "center",
         })
     end
 
     -- Check if a buffer is already loaded for this file.
-    local abs = vim.fn.fnamemodify(path, ":p")
-    local existing = vim.fn.bufnr(abs)
+    local existing = vim.fn.bufnr(path)
 
     if existing ~= -1 and vim.api.nvim_buf_is_loaded(existing) then
         -- Reuse existing loaded buffer (fast, syntax already set up).

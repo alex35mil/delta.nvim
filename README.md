@@ -79,6 +79,18 @@ Use:
 - `:DeltaPicker` to toggle the changed-files picker
 - `:DeltaSpotlight` to toggle spotlight for the current buffer
 
+## Repository selection
+
+The picker uses the repository containing the current file, even when Neovim's working directory is elsewhere. For example, with cwd at `/project`, invoking it from `/project/src/main.lua` lists the parent repository's changes; invoking it from `/project/vendor/library/src/main.lua` lists the nested library repository's changes.
+
+Each picker shows one repository. Independent nested repositories (including ignored checkouts), submodules, and linked Git worktrees are supported. A parent picker retains Git's normal submodule entries rather than combining changes from child repositories.
+
+From an unnamed or non-file buffer, or a file outside every repository, the picker uses cwd. From a Delta staged/deleted buffer or side-by-side diff, it uses the underlying file's repository. Spotlight and file diffs always use their target file's repository.
+
+An open picker or file diff stays attached to its selected repository when you change cwd or focus another window. Automatic picker reopen after staging stays in that file's repository too. Delta does not change Neovim's cwd.
+
+Picker source `files`, `preselect_path`, tree entries, and managed-file action-context paths are repository-relative. Absolute source/preselection paths are also accepted; paths outside the selected repository are excluded. An explicit `diff.open_file({ path = ... })` target may be absolute or relative to invocation cwd.
+
 ## Configuration
 
 Top-level configuration is split into `git`, `reset`, `diff`, `picker`, and `spotlight` sections.

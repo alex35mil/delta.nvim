@@ -6,6 +6,7 @@ local M = {}
 ---@class delta.Node
 ---@field name string
 ---@field path string Full relative path
+---@field file? delta.RepositoryFile File nodes only.
 ---@field status delta.FileStatus?
 ---@field section delta.picker.Section
 ---@field is_dir boolean
@@ -41,6 +42,7 @@ function M.build(files, section)
                 table.insert(node.children, {
                     name = part,
                     path = file.path,
+                    file = file.file,
                     status = file.status,
                     section = section,
                     is_dir = false,

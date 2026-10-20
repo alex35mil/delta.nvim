@@ -6,6 +6,7 @@
 local M = {}
 
 local Git = require("delta.git")
+local Repository = require("delta.repository")
 local Config = require("delta.config")
 local Notify = require("delta.notify")
 local Keys = require("delta.spotlight.keys")
@@ -79,7 +80,8 @@ local wins = {}
 
 ---@class delta.spotlight.ManagedFileState
 ---@field kind "managed"
----@field path delta.FilePath Canonical file path used for git operations and buffer lookup.
+---@field path delta.FilePath Absolute identity used for caches and buffer lookup.
+---@field file delta.RepositoryFile
 ---@field gitdir string Absolute .git directory for the source path.
 ---@field status delta.FileStatus Cached git status for the source path.
 ---@field bufs delta.spotlight.Bufs Buffer realizations associated with this source path.
@@ -96,7 +98,7 @@ local wins = {}
 
 ---@class delta.spotlight.UnmanagedFileState
 ---@field kind "unmanaged"
----@field path delta.FilePath Canonical file path used for git operations and buffer lookup.
+---@field path delta.FilePath Absolute identity used for caches and buffer lookup.
 ---@field status "outsider"|"no_repo" Extra non-git status shown in the winbar.
 ---@field bufs delta.spotlight.Bufs Buffer realizations associated with this source path.
 
@@ -383,16 +385,16 @@ local function sync_picker_context(winid, bufid)
     end
 end
 
----@param path delta.FilePath
+---@param file delta.RepositoryFile
 ---@param origin_win? delta.WinId Window to use as picker origin.
 ---@return boolean scheduled
 ---@return delta.FileStatus? status
-function M.reopen_picker_after_stage(path, origin_win)
+function M.reopen_picker_after_stage(file, origin_win)
     if not Config.options.spotlight.reopen_picker_after_stage then
         return false, nil
     end
 
-    local ok, status = Git.file_status(path)
+    local ok, status = Git.file_status(file)
     if not ok or not status then
         return false, nil
     end
@@ -403,7 +405,7 @@ function M.reopen_picker_after_stage(path, origin_win)
 
     vim.schedule(function()
         local function reopen()
-            require("delta.picker.ui").reopen_after_stage({ staged_path = path })
+            require("delta.picker.ui").reopen_after_stage({ file = file })
         end
 
         if origin_win and vim.api.nvim_win_is_valid(origin_win) then
@@ -422,7 +424,7 @@ local function maybe_reopen_picker_after_stage(file)
         return
     end
 
-    local _, status = M.reopen_picker_after_stage(mfile.path)
+    local _, status = M.reopen_picker_after_stage(mfile.file)
     if status then
         mfile.status = status
     end
@@ -437,7 +439,7 @@ local function make_context(bufid)
     local win = wins[winid]
     local file = file_for_buf(bufid)
 
-    local path = file and file.path or vim.fn.expand("%:.")
+    local path = file and (file.kind == "managed" and file.file.path or file.path) or vim.fn.expand("%:.")
 
     -- Capture visual selection if in visual mode.
     local mode = vim.fn.mode()
@@ -918,20 +920,21 @@ local function visible_current_lines(path, source_bufid)
     end
 end
 
---- Fetch fresh file status and diff hunks for a path.
+--- Fetch fresh file status and diff hunks in its owning repository.
 --- Must be called inside Git.async().
----@param path string
+---@param file delta.RepositoryFile
 ---@param source_bufid? delta.BufId
 ---@return boolean ok
 ---@return delta.spotlight.FileData? data
 ---@return delta.GitContextErrorKind? errkind
-local function fetch_file_data(path, source_bufid)
-    local sok, status, sctxerr = Git.file_status(path)
+local function fetch_file_data(file, source_bufid)
+    local path = file.absolute_path
+    local sok, status, sctxerr = Git.file_status(file)
     if not sok or not status then
         return false, nil, sctxerr
     end
 
-    local hok, raw_hunks = Git.get_diff_hunks(path)
+    local hok, raw_hunks = Git.get_diff_hunks(file)
     if not hok then
         return false, nil, nil
     end
@@ -939,14 +942,14 @@ local function fetch_file_data(path, source_bufid)
     local visible_hunks = { staged = {}, unstaged = {} }
     local action_hunks = { staged = {}, unstaged = {} }
 
-    local ok_index, index_lines = Git.get_index_lines(path)
+    local ok_index, index_lines = Git.get_index_lines(file)
     if not ok_index or not index_lines then
         return false, nil, nil
     end
 
     local current_lines = visible_current_lines(path, source_bufid)
     if not current_lines then
-        local ok_worktree, worktree_lines = Git.get_worktree_lines(path)
+        local ok_worktree, worktree_lines = Git.get_worktree_lines(file)
         if not ok_worktree or not worktree_lines then
             return false, nil, nil
         end
@@ -957,7 +960,7 @@ local function fetch_file_data(path, source_bufid)
     append_no_nl_only_hunks(visible_hunks.unstaged, raw_hunks.unstaged)
     append_no_nl_only_hunks(action_hunks.unstaged, raw_hunks.unstaged)
 
-    local ok_head, head_lines = Git.get_head_lines(path)
+    local ok_head, head_lines = Git.get_head_lines(file)
     if not ok_head or not head_lines then
         return false, nil, nil
     end
@@ -1026,68 +1029,53 @@ end
 ---@param source_bufid? delta.BufId
 ---@return boolean ok
 local function refresh_file_state(path, source_bufid)
-    local gok, gitdir, giterr = Git.git_dir()
+    local cwd = vim.fn.getcwd()
     local current = files[path]
     local bufs = current and current.bufs or {}
     bufs.scratch = bufs.scratch or {}
-
-    if gok and gitdir then
-        local dok, file_data, dataerr = fetch_file_data(path, source_bufid)
-
-        if dok and file_data then
-            files[path] = {
-                kind = "managed",
-                path = path,
-                gitdir = gitdir,
-                bufs = bufs,
-                status = file_data.status,
-                raw_hunks = file_data.raw_hunks,
-                visible_hunks = file_data.visible_hunks,
-                action_hunks = file_data.action_hunks,
-                dirty = false,
-            }
-
-            if source_bufid ~= nil then
-                register_file_buf(files[path], "source", source_bufid, nil)
-            end
-
-            Watchers.start(gitdir)
-            return true
-        end
-
-        if dataerr ~= "outsider" and dataerr ~= "no_repo" then
+    local ref = current and current.kind == "managed" and current.file or nil
+    local ok, err
+    if not ref then
+        ok, ref, err = Git.resolve_file(path)
+        if not ok and err ~= "no_repo" then
             return false
         end
+    end
 
+    if ref then
+        local dok, data = fetch_file_data(ref, source_bufid)
+        if not dok then
+            return false
+        end
+        files[path] = {
+            kind = "managed",
+            path = path,
+            file = ref,
+            gitdir = ref.repo.gitdir,
+            bufs = bufs,
+            status = data.status,
+            raw_hunks = data.raw_hunks,
+            visible_hunks = data.visible_hunks,
+            action_hunks = data.action_hunks,
+            dirty = false,
+        }
+        Watchers.start(ref.repo.gitdir)
+    else
+        local cwd_ok, _, cwd_err = Git.resolve_repository(cwd)
+        if not cwd_ok and cwd_err ~= "no_repo" then
+            return false
+        end
         files[path] = {
             kind = "unmanaged",
             path = path,
             bufs = bufs,
-            status = dataerr == "no_repo" and "no_repo" or "outsider",
+            status = cwd_ok and "outsider" or "no_repo",
         }
-
-        if source_bufid ~= nil then
-            register_file_buf(files[path], "source", source_bufid, nil)
-        end
-
-        return true
     end
-
-    if giterr ~= "no_repo" then
-        return false
-    end
-
-    files[path] = {
-        kind = "unmanaged",
-        path = path,
-        bufs = bufs,
-        status = "no_repo",
-    }
 
     if source_bufid ~= nil then
         register_file_buf(files[path], "source", source_bufid, nil)
     end
-
     return true
 end
 
@@ -1201,9 +1189,9 @@ end
 ---@return string? text
 local function get_deleted_scratch_text(file, mode)
     if mode == "staged" then
-        return Git.get_head_file(file.path)
+        return Git.get_head_file(file.file)
     end
-    return Git.get_staged_file(file.path)
+    return Git.get_staged_file(file.file)
 end
 
 local scratch_hl_ns = vim.api.nvim_create_namespace("delta.spotlight.scratch")
@@ -1321,7 +1309,7 @@ end
 local function ensure_file_scratch_buf(file, content_type, mode)
     local ok, text
     if content_type == "staged" then
-        ok, text = Git.get_staged_file(file.path)
+        ok, text = Git.get_staged_file(file.file)
     elseif content_type == "deleted" then
         ok, text = get_deleted_scratch_text(file, mode)
     end
@@ -1348,6 +1336,7 @@ local function ensure_file_scratch_buf(file, content_type, mode)
         end
     end
 
+    Repository.bind_buffer(bufid, file.file)
     local lines = vim.split(text, "\n", { plain = true })
     if lines[#lines] == "" then
         table.remove(lines)
@@ -1934,7 +1923,7 @@ end
 ---@param source_bufid? delta.BufId
 ---@return boolean ok
 local function refresh_managed_file_data(path, mfile, source_bufid)
-    local ok, file_data = fetch_file_data(mfile.path, source_bufid)
+    local ok, file_data = fetch_file_data(mfile.file, source_bufid)
 
     if ok and file_data then
         mfile.status = file_data.status
@@ -2595,13 +2584,13 @@ function M.toggle_stage_file(bufid, cb)
     Git.async(function()
         local ok_run, err = xpcall(function()
             if mfile.status:has_unstaged() then
-                local ok = Git.stage(path)
+                local ok = Git.stage(mfile.file)
                 if not ok then
                     return
                 end
                 maybe_reopen_picker_after_stage(mfile)
             else
-                local ok = Git.unstage(path)
+                local ok = Git.unstage(mfile.file)
                 if not ok then
                     return
                 end
@@ -2660,7 +2649,7 @@ function M.reset_file(bufid, cb)
 
     Git.async(function()
         local ok_run, err = xpcall(function()
-            local ok, undo_hint, reset_err = Git.reset_file(path, target)
+            local ok, undo_hint, reset_err = Git.reset_file(mfile.file, target)
             if not ok then
                 Notify.error(reset_err or ("Failed to reset file: " .. path))
                 return
@@ -2807,13 +2796,13 @@ end
 ---@field base_lines string[]
 ---@field current_lines string[]
 
----@param path string
+---@param file delta.RepositoryFile
 ---@param action "stage"|"unstage"
 ---@return delta.spotlight.TogglePatchContext? ctx
 ---@return string? err
-local function get_toggle_patch_context(path, action)
+local function get_toggle_patch_context(file, action)
     local staged = action == "unstage"
-    local ok_patch, file_header, hunks, patch_err = Git.get_patch_data(path, staged)
+    local ok_patch, file_header, hunks, patch_err = Git.get_patch_data(file, staged)
     if not ok_patch then
         return nil, patch_err or "failed to load diff"
     end
@@ -2822,11 +2811,11 @@ local function get_toggle_patch_context(path, action)
     local ok_current, current_lines, current_err
 
     if action == "stage" then
-        ok_base, base_lines, base_err = Git.get_index_lines(path)
-        ok_current, current_lines, current_err = Git.get_worktree_lines(path)
+        ok_base, base_lines, base_err = Git.get_index_lines(file)
+        ok_current, current_lines, current_err = Git.get_worktree_lines(file)
     else
-        ok_base, base_lines, base_err = Git.get_head_lines(path)
-        ok_current, current_lines, current_err = Git.get_index_lines(path)
+        ok_base, base_lines, base_err = Git.get_head_lines(file)
+        ok_current, current_lines, current_err = Git.get_index_lines(file)
     end
 
     if not ok_base or not base_lines then
@@ -2845,7 +2834,7 @@ local function get_toggle_patch_context(path, action)
         nil
 end
 
----@param path string
+---@param file delta.RepositoryFile
 ---@param target { action: "stage"|"unstage", hunks: delta.Hunk[] }
 ---@param start_line number
 ---@param end_line number
@@ -2853,8 +2842,8 @@ end
 ---@param source_hunks? delta.Hunk[]
 ---@return boolean success
 ---@return string? err
-local function apply_toggle_target(path, target, start_line, end_line, partial, source_hunks)
-    local ctx, ctx_err = get_toggle_patch_context(path, target.action)
+local function apply_toggle_target(file, target, start_line, end_line, partial, source_hunks)
+    local ctx, ctx_err = get_toggle_patch_context(file, target.action)
     if not ctx then
         return false, ctx_err
     end
@@ -2885,19 +2874,20 @@ local function apply_toggle_target(path, target, start_line, end_line, partial, 
     end
 
     local patch = Git.build_patch(ctx.file_header, selected_hunks)
-    return Git.apply_patch(patch, { reverse = target.action == "unstage", cached = true })
+    return Git.apply_patch(file.repo, patch, { reverse = target.action == "unstage", cached = true })
 end
 
+---@param file delta.RepositoryFile
 ---@return delta.spotlight.TogglePatchContext? ctx
 ---@return string? err
-local function get_reset_patch_context(path)
-    local ok_patch, file_header, hunks, patch_err = Git.get_patch_data(path, false)
+local function get_reset_patch_context(file)
+    local ok_patch, file_header, hunks, patch_err = Git.get_patch_data(file, false)
     if not ok_patch then
         return nil, patch_err or "failed to load diff"
     end
 
-    local ok_base, base_lines, base_err = Git.get_index_lines(path)
-    local ok_current, current_lines, current_err = Git.get_worktree_lines(path)
+    local ok_base, base_lines, base_err = Git.get_index_lines(file)
+    local ok_current, current_lines, current_err = Git.get_worktree_lines(file)
     if not ok_base or not base_lines then
         return nil, base_err or "failed to load base file"
     end
@@ -2915,7 +2905,7 @@ local function get_reset_patch_context(path)
 end
 
 ---@param bufid delta.BufId
----@param path string
+---@param file delta.RepositoryFile
 ---@param target_hunks delta.Hunk[]
 ---@param start_line number
 ---@param end_line number
@@ -2923,8 +2913,8 @@ end
 ---@param source_hunks? delta.Hunk[]
 ---@return boolean success
 ---@return string? err
-local function apply_reset_hunks(bufid, path, target_hunks, start_line, end_line, partial, source_hunks)
-    local ctx, ctx_err = get_reset_patch_context(path)
+local function apply_reset_hunks(bufid, file, target_hunks, start_line, end_line, partial, source_hunks)
+    local ctx, ctx_err = get_reset_patch_context(file)
     if not ctx then
         return false, ctx_err
     end
@@ -3137,7 +3127,7 @@ function M.toggle_stage_hunk(bufid, start_line, end_line, cb)
                     resolve_toggle_target(current_file.action_hunks, current_file.raw_hunks, range_start, range_end)
 
                 local source_bufid = current_file.bufs.source and current_file.bufs.source.buf or nil
-                local ok_data, fresh_file_data = fetch_file_data(path, source_bufid)
+                local ok_data, fresh_file_data = fetch_file_data(current_file.file, source_bufid)
                 if not ok_data or not fresh_file_data then
                     Notify.info("Failed to refresh git state")
                     return
@@ -3180,7 +3170,7 @@ function M.toggle_stage_hunk(bufid, start_line, end_line, cb)
                 local visible_source_hunks = fresh_target.action == "unstage" and fresh_file_data.raw_hunks.staged
                     or fresh_file_data.action_hunks.unstaged
                 local ok, apply_err = apply_toggle_target(
-                    path,
+                    current_file.file,
                     fresh_target,
                     apply_start,
                     apply_end,
@@ -3303,7 +3293,7 @@ function M.reset_hunk(bufid, start_line, end_line, cb)
                 local cached_hunks = resolve_reset_hunks(current_file.action_hunks, range_start, range_end)
 
                 local source_bufid = current_file.bufs.source and current_file.bufs.source.buf or nil
-                local ok_data, fresh_file_data = fetch_file_data(path, source_bufid)
+                local ok_data, fresh_file_data = fetch_file_data(current_file.file, source_bufid)
                 if not ok_data or not fresh_file_data then
                     Notify.info("Failed to refresh git state")
                     return
@@ -3323,7 +3313,7 @@ function M.reset_hunk(bufid, start_line, end_line, cb)
 
                 local ok, apply_err = apply_reset_hunks(
                     bufid,
-                    path,
+                    current_file.file,
                     fresh_hunk_target,
                     range_start,
                     range_end,
