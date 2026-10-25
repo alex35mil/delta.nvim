@@ -377,6 +377,8 @@ The picker shows git-changed files in a tree, split into unstaged and staged sec
 
 The picker prompt buffer uses the `delta-input` filetype. You can target it from your own config however you need.
 
+When the picker is opened from a side-by-side file diff tab, opening a file updates that diff to show the selected file instead of opening a buffer. This applies to every open action (`open`, `open_vsplit`, `open_hsplit`, `spotlight`). The entry's picker section picks the mode: unstaged entries show INDEX ↔ WORKTREE, and staged entries show HEAD ↔ INDEX.
+
 ### Default picker keys
 
 | Key | Action |
@@ -512,7 +514,7 @@ require("delta").picker.show({
 
 Spotlight focuses the current window on diff hunks by folding away unchanged lines. It supports file-level and hunk-level stage/unstage and reset operations.
 
-If `spotlight.reopen_picker_after_stage = true`, fully staging a file through spotlight or a side-by-side file diff can reopen the picker and preselect the next unstaged file. It is disabled by default to follow the principle of least surprise, but enabling it can make review workflows much smoother.
+If `spotlight.reopen_picker_after_stage = true`, fully staging a file through spotlight or a side-by-side file diff can reopen the picker and preselect the next unstaged file. In a side-by-side diff, the tab stays open on the staged view (HEAD ↔ INDEX) of the file you just staged, and the reopened picker updates that diff when you pick a file. `toggle_stage_file_and_close` still closes the tab. It is disabled by default to follow the principle of least surprise, but enabling it can make review workflows much smoother.
 
 When `spotlight.toggle_stage_hunk` or `spotlight.reset_hunk` runs on a modified buffer, delta needs to save the file first so the operation matches Git's worktree view. By default delta asks for confirmation; set `spotlight.autosave_before_stage = true` to save automatically.
 
@@ -623,7 +625,9 @@ Available built-ins:
 
 `require("delta").diff.open_file()` opens the current file in a new native diff tab. `auto` mode shows unstaged changes first, then staged changes. Configure `diff.file.keys` for tab-local actions: close, stage/unstage file, reset file, and expand/shrink native diff context. By default, the file diff winbar shows `?=keymaps`; pressing `?` opens keymap help. The help dialog reuses `diff.file.keys.close` plus fallback close keys. Set `diff.file.keymap_hints = "winbar"` for full inline hints, or `false` to hide hints and bind no help key. `true` aliases the default dialog mode. If `?` conflicts with a file diff action key, the action key wins and the help binding/hint is omitted.
 
-Opening a file diff syncs to the source cursor line when visible, or to the nearest visible hunk when that line is folded by the diff context. Closing a file diff back to the same file restores the source cursor to the current diff location.
+Opening a file diff syncs to the source cursor line when visible, or to the nearest visible hunk when that line is folded by the diff context. Closing a file diff back to the same file restores the source cursor to the current diff location. If the diff was switched to another file through the picker, closing opens that file in the original window with the cursor at the current diff location. The window is left unchanged when that file no longer exists on disk.
+
+Side-by-side diffs compare the final newline too. When only one side ends with a newline, the other side shows a `\ No newline at end of file` line, as Git does.
 
 Markdown file diffs enable wrapping and `linebreak` in both side-by-side panes for readability; other filetypes stay unwrapped.
 
@@ -672,7 +676,7 @@ vim.api.nvim_create_autocmd("User", {
 
 ### Review workflow
 
-This is already mentioned in the configuration section, but it's worth a dedicated tip. If you use delta primarily to walk through changes file-by-file, the `reopen_picker_after_stage` option turns the picker, spotlight, and side-by-side file diff into a focused review loop: open the picker, land on a file, stage hunks or the whole file, and the picker automatically reopens with the next unstaged file preselected.
+This is already mentioned in the configuration section, but it's worth a dedicated tip. If you use delta primarily to walk through changes file-by-file, the `reopen_picker_after_stage` option turns the picker, spotlight, and side-by-side file diff into a focused review loop: open the picker, land on a file, stage hunks or the whole file, and the picker automatically reopens with the next unstaged file preselected. In a side-by-side file diff, you stay in the diff tab the whole time: picking the next file updates the diff.
 
 ```lua
 require("delta").setup({

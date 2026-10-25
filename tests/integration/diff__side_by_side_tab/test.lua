@@ -89,6 +89,40 @@ local function wait_for_picker_node(nvim, path, section)
     ]], path, section), 5000, 20)
 end
 
+local function install_diff_state_helper(nvim)
+    nvim.lua([[
+        _G.diff_tabs = function()
+            return find_upvalue(require('delta.diff.file').close, 'tabs')
+        end
+        _G.current_diff_state = function()
+            local tabs = _G.diff_tabs() or {}
+            for _, state in pairs(tabs) do
+                return state
+            end
+        end
+    ]])
+end
+
+-- Diff tab stays open in staged mode on `path` and the picker reopened from inside it.
+local function wait_for_staged_diff_with_picker(nvim, path, next_path)
+    install_diff_state_helper(nvim)
+    H.nvim_wait_for(nvim, string.format([[
+        (function()
+            local state = _G.current_diff_state and _G.current_diff_state()
+            return state ~= nil
+                and state.file.path == %q
+                and state.resolved_mode == 'staged'
+                and #vim.api.nvim_list_tabpages() == 2
+        end)()
+    ]], path), 5000, 20)
+    wait_for_picker_node(nvim, next_path, "unstaged")
+    H.eq(nvim.lua([[
+        local state = _G.current_diff_state()
+        local picker = _G.picker_state()
+        return picker.origin_win == state.left_win or picker.origin_win == state.right_win
+    ]]), true)
+end
+
 local function wait_for_picker_source(nvim, key)
     H.nvim_wait_for(nvim, string.format([[
         (function()
@@ -859,8 +893,7 @@ T["reopens picker after staging file from auto side-by-side diff"] = function()
     H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
 
     nvim.api.nvim_input("s")
-    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
-    wait_for_picker_node(nvim, "next.txt", "unstaged")
+    wait_for_staged_diff_with_picker(nvim, "file.txt", "next.txt")
     H.nvim_wait_for_git_diff(nvim, "file.txt", true, true, 5000, 20)
     H.nvim_wait_for_git_diff(nvim, "file.txt", false, false, 5000, 20)
 end
@@ -953,8 +986,7 @@ T["reopens picker with custom-source nav after staging deleted file from side-by
     H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
 
     nvim.api.nvim_input("s")
-    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
-    wait_for_picker_node(nvim, "next.txt", "unstaged")
+    wait_for_staged_diff_with_picker(nvim, "deleted.txt", "next.txt")
     H.nvim_wait_for_git_diff(nvim, "deleted.txt", true, true, 5000, 20)
     H.nvim_wait_for_git_diff(nvim, "deleted.txt", false, false, 5000, 20)
 end
@@ -1009,8 +1041,7 @@ T["reopens picker with custom-source nav after staging regular file from side-by
     H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
 
     nvim.api.nvim_input("s")
-    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
-    wait_for_picker_node(nvim, "next.txt", "unstaged")
+    wait_for_staged_diff_with_picker(nvim, "current.txt", "next.txt")
     H.nvim_wait_for_git_diff(nvim, "current.txt", true, true, 5000, 20)
     H.nvim_wait_for_git_diff(nvim, "current.txt", false, false, 5000, 20)
 end
@@ -1054,8 +1085,7 @@ T["reopens picker with inline source after staging from side-by-side diff"] = fu
     H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
 
     nvim.api.nvim_input("s")
-    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
-    wait_for_picker_node(nvim, "next.txt", "unstaged")
+    wait_for_staged_diff_with_picker(nvim, "current.txt", "next.txt")
 end
 
 T["reopens picker with source selected by cycling"] = function()
@@ -1124,9 +1154,8 @@ T["reopens picker with source selected by cycling"] = function()
     H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
 
     nvim.api.nvim_input("s")
-    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+    wait_for_staged_diff_with_picker(nvim, "current.txt", "next.txt")
     wait_for_picker_source(nvim, "review")
-    wait_for_picker_node(nvim, "next.txt", "unstaged")
 end
 
 T["reopens remembered source at first unstaged when staged path leaves source"] = function()
@@ -1178,9 +1207,8 @@ T["reopens remembered source at first unstaged when staged path leaves source"] 
     H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
 
     nvim.api.nvim_input("s")
-    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+    wait_for_staged_diff_with_picker(nvim, "current.txt", "zzz-review.txt")
     wait_for_picker_source(nvim, "review")
-    wait_for_picker_node(nvim, "zzz-review.txt", "unstaged")
 end
 
 T["falls back to git when remembered source has no unstaged files"] = function()
@@ -1220,9 +1248,8 @@ T["falls back to git when remembered source has no unstaged files"] = function()
     H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
 
     nvim.api.nvim_input("s")
-    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+    wait_for_staged_diff_with_picker(nvim, "current.txt", "aaa-git.txt")
     wait_for_picker_source(nvim, "git")
-    wait_for_picker_node(nvim, "aaa-git.txt", "unstaged")
 end
 
 T["opens staged picker entry in split using staged mode"] = function()
@@ -1576,6 +1603,606 @@ T["does not unstage staged diff when buffer has unseen unsaved changes"] = funct
     vim.uv.sleep(200)
     H.eq(nvim.lua("return #vim.api.nvim_list_tabpages()"), 2)
     H.nvim_wait_for_git_diff(nvim, "file.txt", true, true, 5000, 20)
+end
+
+-- Picker launched from a side-by-side diff tab.
+
+local function init_replace_repo()
+    local other = numbered_lines(60)
+    local repo = H.init_repo({
+        ["file.txt"] = numbered_lines(100),
+        ["other.txt"] = other,
+    })
+    local changed = numbered_lines(100)
+    changed[90] = "line 90 changed"
+    H.write_file(repo .. "/file.txt", changed)
+    local other_changed = vim.deepcopy(other)
+    other_changed[40] = "line 40 changed"
+    H.write_file(repo .. "/other.txt", other_changed)
+    return repo
+end
+
+local function setup_replace(nvim, extra)
+    nvim.lua(string.format([[
+        local picker_actions = require('delta').picker.actions
+        require('delta').setup({
+            %s
+            picker = {
+                initial_mode = 'n',
+                actions = {
+                    open_vsplit = { 'v', picker_actions.open_vsplit },
+                    open_hsplit = { 'x', picker_actions.open_hsplit },
+                    spotlight = { 'z', picker_actions.spotlight },
+                },
+            },
+            diff = { file = { keys = { close = '<D-w>', toggle_stage_file = 's' } } },
+        })
+    ]], extra or ""))
+    install_picker_state_helper(nvim)
+    install_spotlight_wins_helper(nvim)
+    install_diff_state_helper(nvim)
+end
+
+---@param pane "left"|"right"
+local function open_picker_from_pane(nvim, pane, cursor_line)
+    nvim.lua_func(function(side, line)
+        local state = _G.current_diff_state()
+        local win = side == "left" and state.left_win or state.right_win
+        vim.api.nvim_set_current_win(win)
+        if line then
+            vim.api.nvim_win_set_cursor(win, { line, 0 })
+        end
+    end, pane, cursor_line)
+    nvim.lua([[require('delta.picker').show()]])
+end
+
+local function select_picker_node(nvim, path, section)
+    H.nvim_wait_for(nvim, string.format([[
+        (function()
+            local state = _G.picker_state and _G.picker_state()
+            if not state or state.input_buf == 0 or not vim.api.nvim_buf_is_valid(state.input_buf) then
+                return false
+            end
+            for i, node in ipairs(state.nodes) do
+                if node and node.path == %q and node.section == %q then
+                    state.cursor_idx = i
+                    return true
+                end
+            end
+            return false
+        end)()
+    ]], path, section), 5000, 20)
+end
+
+local function press_picker_key(nvim, lhs)
+    nvim.lua_func(function(key)
+        local state = _G.picker_state()
+        for _, map in ipairs(vim.api.nvim_buf_get_keymap(state.input_buf, "n")) do
+            if map.lhs == key then
+                map.callback()
+                return
+            end
+        end
+        error("picker mapping not found: " .. key)
+    end, lhs)
+end
+
+local function wait_for_diff_file(nvim, path, mode)
+    H.nvim_wait_for(nvim, string.format([[
+        (function()
+            local state = _G.current_diff_state and _G.current_diff_state()
+            return state ~= nil and state.file.path == %q and state.resolved_mode == %q
+                and vim.api.nvim_win_get_buf(state.left_win) == state.left_buf
+                and vim.api.nvim_win_get_buf(state.right_win) == state.right_buf
+        end)()
+    ]], path, mode), 5000, 20)
+end
+
+local function diff_tab_snapshot(nvim)
+    return nvim.lua([[
+        local state = _G.current_diff_state()
+        local function pane(win)
+            local buf = vim.api.nvim_win_get_buf(win)
+            local map = vim.api.nvim_win_call(win, function()
+                return vim.fn.maparg('<D-w>', 'n', false, true)
+            end)
+            return {
+                name = vim.api.nvim_buf_get_name(buf),
+                diff = vim.wo[win].diff,
+                lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false),
+                cursor = vim.api.nvim_win_get_cursor(win)[1],
+                winbar = vim.wo[win].winbar,
+                close = map.desc,
+            }
+        end
+        return {
+            tabs = #vim.api.nvim_list_tabpages(),
+            wins = #vim.api.nvim_tabpage_list_wins(state.tab),
+            left = pane(state.left_win),
+            right = pane(state.right_win),
+            picker_open = _G.picker_state() ~= nil,
+            spotlight = next(_G.spotlight_wins() or {}) ~= nil,
+        }
+    ]])
+end
+
+local function assert_replaced(nvim, repo, path, old_lines, new_lines, first_line)
+    local snap = diff_tab_snapshot(nvim)
+    H.eq(snap.tabs, 2)
+    H.eq(snap.wins, 2)
+    H.eq(snap.picker_open, false)
+    H.eq(snap.spotlight, false)
+    for _, side in ipairs({ "left", "right" }) do
+        local pane = snap[side]
+        assert(pane.name:find("^delta://diff/"), pane.name)
+        assert(pane.name:find(repo .. "/" .. path, 1, true) or pane.name:find(path, 1, true), pane.name)
+        H.eq(pane.diff, true)
+        H.eq(pane.close, "delta.diff.file.close")
+        assert(pane.winbar:find(path, 1, true), pane.winbar)
+        H.eq(pane.cursor, first_line)
+    end
+    H.eq(snap.left.lines, old_lines)
+    H.eq(snap.right.lines, new_lines)
+end
+
+local function other_lines(changed)
+    local lines = numbered_lines(60)
+    if changed then
+        lines[40] = "line 40 changed"
+    end
+    return lines
+end
+
+T["picker open from right diff pane updates the diff"] = function()
+    local repo = init_replace_repo()
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim)
+    H.nvim_edit(nvim, repo .. "/file.txt")
+    open_file_diff(nvim)
+
+    open_picker_from_pane(nvim, "right", 90)
+    select_picker_node(nvim, "other.txt", "unstaged")
+    nvim.api.nvim_input("\r")
+    wait_for_diff_file(nvim, "other.txt", "unstaged")
+
+    assert_replaced(nvim, repo, "other.txt", other_lines(false), other_lines(true), 40)
+end
+
+T["picker open from left diff pane updates the diff and close key closes the tab"] = function()
+    local repo = init_replace_repo()
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim)
+    H.nvim_edit(nvim, repo .. "/file.txt")
+    local origin_win = nvim.lua("return vim.api.nvim_get_current_win()")
+    open_file_diff(nvim)
+
+    open_picker_from_pane(nvim, "left", 90)
+    select_picker_node(nvim, "other.txt", "unstaged")
+    nvim.api.nvim_input("\r")
+    wait_for_diff_file(nvim, "other.txt", "unstaged")
+    assert_replaced(nvim, repo, "other.txt", other_lines(false), other_lines(true), 40)
+
+    nvim.lua([[vim.api.nvim_set_current_win(_G.current_diff_state().left_win)]])
+    nvim.api.nvim_input("<D-w>")
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+    H.eq(nvim.lua("return vim.api.nvim_get_current_win()"), origin_win)
+    H.eq(nvim.lua("return next(_G.diff_tabs()) == nil"), true)
+end
+
+T["split and spotlight picker actions from a diff pane update the diff"] = function()
+    for _, key in ipairs({ "v", "x", "z" }) do
+        local repo = init_replace_repo()
+        H.finally_rm(repo)
+        local nvim = H.new_nvim()
+        MiniTest.finally(nvim.stop)
+        H.nvim_set_cwd(nvim, repo)
+        setup_replace(nvim)
+        H.nvim_edit(nvim, repo .. "/file.txt")
+        open_file_diff(nvim)
+
+        open_picker_from_pane(nvim, "right")
+        select_picker_node(nvim, "other.txt", "unstaged")
+        press_picker_key(nvim, key)
+        wait_for_diff_file(nvim, "other.txt", "unstaged")
+
+        assert_replaced(nvim, repo, "other.txt", other_lines(false), other_lines(true), 40)
+        nvim.stop()
+    end
+end
+
+T["staged picker entry switches the diff to staged mode"] = function()
+    local repo = init_replace_repo()
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    H.git(repo, "add", "other.txt")
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim)
+    H.nvim_edit(nvim, repo .. "/file.txt")
+    open_file_diff(nvim)
+
+    open_picker_from_pane(nvim, "right")
+    select_picker_node(nvim, "other.txt", "staged")
+    nvim.api.nvim_input("\r")
+    wait_for_diff_file(nvim, "other.txt", "staged")
+
+    assert_replaced(nvim, repo, "other.txt", other_lines(false), other_lines(true), 40)
+    local snap = diff_tab_snapshot(nvim)
+    assert(snap.left.winbar:find("HEAD", 1, true), snap.left.winbar)
+    assert(snap.right.winbar:find("INDEX", 1, true), snap.right.winbar)
+end
+
+T["stage key after replacement acts on the new file"] = function()
+    local repo = init_replace_repo()
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim)
+    H.nvim_edit(nvim, repo .. "/file.txt")
+    open_file_diff(nvim)
+
+    open_picker_from_pane(nvim, "right")
+    select_picker_node(nvim, "other.txt", "unstaged")
+    nvim.api.nvim_input("\r")
+    wait_for_diff_file(nvim, "other.txt", "unstaged")
+
+    nvim.api.nvim_input("s")
+    H.nvim_wait_for_git_diff(nvim, "other.txt", true, true, 5000, 20)
+    H.nvim_wait_for_git_diff(nvim, "other.txt", false, false, 5000, 20)
+    H.nvim_wait_for_git_diff(nvim, "file.txt", true, false, 5000, 20)
+    H.nvim_wait_for_git_diff(nvim, "file.txt", false, true, 5000, 20)
+end
+
+T["closing a switched diff returns to origin showing the new file at the diff cursor"] = function()
+    local repo = init_replace_repo()
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim)
+    H.nvim_edit(nvim, repo .. "/file.txt")
+    local origin = nvim.lua("return { win = vim.api.nvim_get_current_win(), buf = vim.api.nvim_get_current_buf() }")
+    open_file_diff(nvim)
+
+    open_picker_from_pane(nvim, "right")
+    select_picker_node(nvim, "other.txt", "unstaged")
+    nvim.api.nvim_input("\r")
+    wait_for_diff_file(nvim, "other.txt", "unstaged")
+
+    nvim.lua([[
+        local state = _G.current_diff_state()
+        vim.api.nvim_set_current_win(state.right_win)
+        vim.api.nvim_win_set_cursor(state.right_win, { 41, 0 })
+    ]])
+    nvim.api.nvim_input("<D-w>")
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+
+    local result = nvim.lua_func(function(origin_buf)
+        local buf = vim.api.nvim_get_current_buf()
+        return {
+            win = vim.api.nvim_get_current_win(),
+            name = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buf), ":t"),
+            cursor = vim.api.nvim_win_get_cursor(0)[1],
+            wins = #vim.api.nvim_tabpage_list_wins(0),
+            origin_loaded = vim.api.nvim_buf_is_loaded(origin_buf),
+        }
+    end, origin.buf)
+    H.eq(result, { win = origin.win, name = "other.txt", cursor = 41, wins = 1, origin_loaded = true })
+end
+
+T["closing a diff switched back to the origin file keeps the buffer and restores cursor"] = function()
+    local repo = init_replace_repo()
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim)
+    H.nvim_edit(nvim, repo .. "/file.txt")
+    local origin = nvim.lua("return { win = vim.api.nvim_get_current_win(), buf = vim.api.nvim_get_current_buf() }")
+    open_file_diff(nvim)
+
+    open_picker_from_pane(nvim, "right")
+    select_picker_node(nvim, "other.txt", "unstaged")
+    nvim.api.nvim_input("\r")
+    wait_for_diff_file(nvim, "other.txt", "unstaged")
+    open_picker_from_pane(nvim, "right")
+    select_picker_node(nvim, "file.txt", "unstaged")
+    nvim.api.nvim_input("\r")
+    wait_for_diff_file(nvim, "file.txt", "unstaged")
+
+    nvim.lua([[
+        local state = _G.current_diff_state()
+        vim.api.nvim_set_current_win(state.right_win)
+        vim.api.nvim_win_set_cursor(state.right_win, { 88, 0 })
+    ]])
+    nvim.api.nvim_input("<D-w>")
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+
+    local result = nvim.lua([[
+        return {
+            win = vim.api.nvim_get_current_win(),
+            buf = vim.api.nvim_get_current_buf(),
+            cursor = vim.api.nvim_win_get_cursor(0)[1],
+        }
+    ]])
+    H.eq(result, { win = origin.win, buf = origin.buf, cursor = 88 })
+end
+
+T["stage with picker reopen stays in the diff and the picker updates it"] = function()
+    local repo = init_replace_repo()
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim, "spotlight = { reopen_picker_after_stage = true },")
+    H.nvim_edit(nvim, repo .. "/file.txt")
+    open_file_diff(nvim)
+
+    nvim.lua([[vim.api.nvim_set_current_win(_G.current_diff_state().right_win)]])
+    nvim.api.nvim_input("s")
+    wait_for_staged_diff_with_picker(nvim, "file.txt", "other.txt")
+    local staged = numbered_lines(100)
+    staged[90] = "line 90 changed"
+    local snap = diff_tab_snapshot(nvim)
+    H.eq(snap.left.lines, numbered_lines(100))
+    H.eq(snap.right.lines, staged)
+    assert(snap.left.winbar:find("HEAD", 1, true), snap.left.winbar)
+    assert(snap.right.winbar:find("INDEX", 1, true), snap.right.winbar)
+
+    nvim.api.nvim_input("\r")
+    wait_for_diff_file(nvim, "other.txt", "unstaged")
+    assert_replaced(nvim, repo, "other.txt", other_lines(false), other_lines(true), 40)
+end
+
+T["dismissing the reopened picker keeps the staged view"] = function()
+    local repo = init_replace_repo()
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim, "spotlight = { reopen_picker_after_stage = true },")
+    H.nvim_edit(nvim, repo .. "/file.txt")
+    open_file_diff(nvim)
+
+    nvim.api.nvim_input("s")
+    wait_for_staged_diff_with_picker(nvim, "file.txt", "other.txt")
+    nvim.api.nvim_input("<Esc>")
+    H.nvim_wait_for(nvim, "_G.picker_state() == nil", 5000, 20)
+
+    local state = nvim.lua([[
+        local state = _G.current_diff_state()
+        return { path = state.file.path, mode = state.resolved_mode, tabs = #vim.api.nvim_list_tabpages() }
+    ]])
+    H.eq(state, { path = "file.txt", mode = "staged", tabs = 2 })
+end
+
+T["unstaging after dismissing the reopened picker returns to the unstaged view"] = function()
+    local repo = init_replace_repo()
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim, "spotlight = { reopen_picker_after_stage = true },")
+    H.nvim_edit(nvim, repo .. "/file.txt")
+    open_file_diff(nvim)
+
+    nvim.api.nvim_input("s")
+    wait_for_staged_diff_with_picker(nvim, "file.txt", "other.txt")
+    nvim.api.nvim_input("<Esc>")
+    H.nvim_wait_for(nvim, "_G.picker_state() == nil", 5000, 20)
+
+    nvim.lua([[vim.api.nvim_set_current_win(_G.current_diff_state().right_win)]])
+    nvim.api.nvim_input("s")
+    H.nvim_wait_for_git_diff(nvim, "file.txt", true, false, 5000, 20)
+    wait_for_diff_file(nvim, "file.txt", "unstaged")
+    H.eq(nvim.lua("return #vim.api.nvim_list_tabpages()"), 2)
+    local snap = diff_tab_snapshot(nvim)
+    assert(snap.left.winbar:find("INDEX", 1, true), snap.left.winbar)
+    assert(snap.right.winbar:find("WORKTREE", 1, true), snap.right.winbar)
+end
+
+local function diff_side_lines(nvim)
+    return nvim.lua([[
+        local state = _G.current_diff_state()
+        return {
+            left = vim.api.nvim_buf_get_lines(state.left_buf, 0, -1, false),
+            right = vim.api.nvim_buf_get_lines(state.right_buf, 0, -1, false),
+        }
+    ]])
+end
+
+local NO_NL = "\\ No newline at end of file"
+
+T["final newline: normal change has no extra trailing line"] = function()
+    local repo = H.init_repo({ ["file.txt"] = { "one", "two" } })
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    H.write_file(repo .. "/file.txt", { "one", "two changed" })
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim)
+    nvim.lua_notify([[require('delta.diff').open_file({ path = 'file.txt' })]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+    H.eq(diff_side_lines(nvim), { left = { "one", "two" }, right = { "one", "two changed" } })
+end
+
+local function init_no_eol_repo()
+    local repo = H.tmpdir()
+    H.git(repo, "init")
+    H.git(repo, "config", "user.name", "delta-tests")
+    H.git(repo, "config", "user.email", "delta-tests@nvim.com")
+    local f = assert(io.open(repo .. "/noeol.txt", "wb"))
+    f:write("a")
+    f:close()
+    H.write_file(repo .. "/other.txt", { "old" })
+    H.git(repo, "add", ".")
+    H.git(repo, "commit", "-m", "initial")
+    H.write_file(repo .. "/noeol.txt", { "a" })
+    H.write_file(repo .. "/other.txt", { "new" })
+    return repo
+end
+
+T["final newline: newline-only change opens by path and stages"] = function()
+    local repo = init_no_eol_repo()
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim)
+    nvim.lua_notify([[require('delta.diff').open_file({ path = 'noeol.txt' })]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+    H.eq(diff_side_lines(nvim), { left = { "a", NO_NL }, right = { "a" } })
+
+    nvim.lua([[vim.api.nvim_set_current_win(_G.current_diff_state().right_win)]])
+    nvim.api.nvim_input("s")
+    H.nvim_wait_for_git_diff(nvim, "noeol.txt", true, true, 5000, 20)
+    H.nvim_wait_for_git_diff(nvim, "noeol.txt", false, false, 5000, 20)
+end
+
+T["final newline: newline-only change opens through the picker"] = function()
+    local repo = init_no_eol_repo()
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim)
+    nvim.lua_notify([[require('delta.diff').open_file({ path = 'other.txt' })]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+
+    open_picker_from_pane(nvim, "right")
+    select_picker_node(nvim, "noeol.txt", "unstaged")
+    nvim.api.nvim_input("\r")
+    wait_for_diff_file(nvim, "noeol.txt", "unstaged")
+    H.eq(diff_side_lines(nvim), { left = { "a", NO_NL }, right = { "a" } })
+end
+
+T["final newline: source buffer without eol shows the marker on the worktree side"] = function()
+    local repo = H.init_repo({ ["file.txt"] = { "a", "b" } })
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    -- The file on disk has an unstaged change and a final newline; the unsaved buffer drops the newline.
+    H.write_file(repo .. "/file.txt", { "a", "b changed" })
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim)
+    H.nvim_edit(nvim, repo .. "/file.txt")
+    nvim.lua([[
+        vim.bo.endofline = false
+        vim.bo.fixendofline = false
+    ]])
+    nvim.lua_notify([[require('delta.diff').open_file()]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+    H.eq(diff_side_lines(nvim), { left = { "a", "b" }, right = { "a", "b changed", NO_NL } })
+end
+
+T["final newline: unchanged empty tracked file reports no changes"] = function()
+    local repo = H.tmpdir()
+    H.finally_rm(repo)
+    H.git(repo, "init")
+    H.git(repo, "config", "user.name", "delta-tests")
+    H.git(repo, "config", "user.email", "delta-tests@nvim.com")
+    local f = assert(io.open(repo .. "/empty.txt", "wb"))
+    f:close()
+    H.git(repo, "add", ".")
+    H.git(repo, "commit", "-m", "initial")
+
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim)
+    nvim.lua([[
+        _G.notes = {}
+        local notify = vim.notify
+        vim.notify = function(msg, ...)
+            table.insert(_G.notes, msg)
+            return notify(msg, ...)
+        end
+    ]])
+    H.nvim_edit(nvim, repo .. "/empty.txt")
+    nvim.lua_notify([[require('delta.diff').open_file()]])
+    H.nvim_wait_for(nvim, [[vim.iter(_G.notes):any(function(m) return m:find('No changes for current file', 1, true) ~= nil end)]], 5000, 20)
+    H.eq(nvim.lua("return #vim.api.nvim_list_tabpages()"), 1)
+end
+
+T["final newline: emptied source buffer shows an empty worktree side"] = function()
+    local repo = H.init_repo({ ["file.txt"] = { "x" } })
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+    -- The file on disk differs from the index, so auto mode compares content.
+    H.write_file(repo .. "/file.txt", { "y" })
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim)
+    H.nvim_edit(nvim, repo .. "/file.txt")
+    -- With noendofline, an unmapped empty buffer would read as { "" } without a final newline and get a marker line.
+    nvim.lua([[
+        vim.api.nvim_buf_set_lines(0, 0, -1, false, {})
+        vim.bo.endofline = false
+        vim.bo.fixendofline = false
+    ]])
+    nvim.lua_notify([[require('delta.diff').open_file()]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+    -- An empty side buffer always holds one empty line; the empty buffer must not add a marker or a stray line.
+    H.eq(diff_side_lines(nvim), { left = { "x" }, right = { "" } })
+    H.eq(nvim.lua("return _G.current_diff_state().used_source_buffer"), true)
+end
+
+T["stage leaving no staged diff closes the tab and reopens picker from origin once"] = function()
+    local repo = H.init_repo({
+        ["file.txt"] = { "one" },
+        ["next.txt"] = { "old" },
+    })
+    H.finally_rm(repo)
+    local nvim = H.new_nvim()
+    MiniTest.finally(nvim.stop)
+
+    H.write_file(repo .. "/file.txt", { "staged" })
+    H.git(repo, "add", "file.txt")
+    H.write_file(repo .. "/file.txt", { "one" })
+    H.write_file(repo .. "/next.txt", { "new" })
+
+    H.nvim_set_cwd(nvim, repo)
+    setup_replace(nvim, "spotlight = { reopen_picker_after_stage = true },")
+    nvim.lua([[
+        _G.picker_shows = 0
+        local UI = require('delta.picker.ui')
+        local show = UI.show
+        _G.picker_state = function()
+            return find_upvalue(show, 'state')
+        end
+        UI.show = function(...)
+            _G.picker_shows = _G.picker_shows + 1
+            return show(...)
+        end
+    ]])
+    H.nvim_edit(nvim, repo .. "/file.txt")
+    local origin_win = nvim.lua("return vim.api.nvim_get_current_win()")
+    nvim.lua_notify([[require('delta.diff').open_file({ mode = 'unstaged' })]])
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 2", 5000, 20)
+
+    nvim.api.nvim_input("s")
+    H.nvim_wait_for(nvim, "#vim.api.nvim_list_tabpages() == 1", 5000, 20)
+    wait_for_picker_node(nvim, "next.txt", "unstaged")
+    H.nvim_wait_for_git_diff(nvim, "file.txt", true, false, 5000, 20)
+    nvim.lua("vim.wait(200)")
+
+    local result = nvim.lua(string.format([[
+        local state = _G.picker_state()
+        return {
+            shows = _G.picker_shows,
+            origin = state.origin_win == %d,
+            float_tab = vim.api.nvim_win_get_tabpage(state.tree_win) == vim.api.nvim_get_current_tabpage(),
+            diff_tabs = next(_G.diff_tabs()) == nil,
+        }
+    ]], origin_win))
+    H.eq(result, { shows = 1, origin = true, float_tab = true, diff_tabs = true })
 end
 
 return T
