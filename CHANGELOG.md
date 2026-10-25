@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-25
+
+- **FIXED:** Opening a file from a picker launched in a side-by-side file diff now updates that diff instead of opening the file in one of its panes. Closing a switched diff returns to that file at the diff cursor.
+- **CHANGED:** With `spotlight.reopen_picker_after_stage`, staging from a side-by-side diff keeps the diff tab open on the staged view and reopens the picker from it.
+- **FIXED:** Side-by-side diffs no longer show an extra empty line at the end of the worktree side, and show final-newline-only changes.
+
 ## 2026-10-20
 
 - **ADDED:** Review and stage changes in the current file's repository, including nested checkouts, submodules, and linked worktrees, without changing Neovim's working directory.

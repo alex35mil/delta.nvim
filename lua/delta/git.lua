@@ -850,6 +850,66 @@ local function get_show_lines(repo, args)
     return false, nil, stderr
 end
 
+---@class delta.FileContent
+---@field lines string[] Content lines, without a trailing empty element for the final newline.
+---@field eol boolean Whether the content ends with a newline.
+
+---@param text string
+---@return delta.FileContent
+local function text_content(text)
+    if text == "" then
+        return { lines = {}, eol = false }
+    end
+    return { lines = split_text_lines(text), eol = text:sub(-1) == "\n" }
+end
+
+--- Get file contents with final-newline information. Missing files resolve to empty content.
+--- Must be called inside M.async() for "head" and "index".
+---@param file delta.RepositoryFile
+---@param source "head"|"index"|"worktree"
+---@return boolean ok
+---@return delta.FileContent? content
+---@return string? error
+function M.get_content(file, source)
+    if source == "worktree" then
+        local path = file.absolute_path
+        if vim.fn.filereadable(path) == 0 or vim.fn.getfsize(path) == 0 then
+            return true, { lines = {}, eol = false }
+        end
+        local ok, lines = pcall(vim.fn.readfile, path, "b")
+        if not ok then
+            return false, nil, tostring(lines)
+        end
+        -- Binary reads keep a trailing "" when the file ends with a newline.
+        local eol = #lines > 0 and lines[#lines] == ""
+        if eol then
+            table.remove(lines)
+        end
+        return true, { lines = lines, eol = eol }
+    end
+
+    local args
+    if source == "head" then
+        args = { "show", "HEAD:" .. file.path }
+    elseif source == "index" then
+        args = { "show", ":" .. file.path }
+    else
+        error("Unexpected content source: " .. tostring(source))
+    end
+
+    local result = run(file.repo.root, args)
+    if result.code == 0 then
+        return true, text_content(result.stdout or "")
+    end
+
+    local stderr = result.stderr or ""
+    if is_missing_blob(args, stderr) then
+        return true, { lines = {}, eol = false }
+    end
+
+    return false, nil, stderr
+end
+
 --- Get file contents from the index as lines. Missing files resolve to an empty list.
 --- Must be called inside M.async().
 ---@param file delta.RepositoryFile

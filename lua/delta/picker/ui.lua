@@ -1383,6 +1383,16 @@ local function make_context()
                 return false
             end
 
+            -- Picker launched from a side-by-side diff tab: every open action updates that diff.
+            local FileDiff = require("delta.diff.file")
+            if origin_win and FileDiff.owns_win(origin_win) then
+                local mode = node.section == "staged" and "staged" or "unstaged"
+                M.close()
+                vim.api.nvim_set_current_win(origin_win)
+                FileDiff.replace(origin_win, node.file, mode)
+                return true
+            end
+
             opts = opts or { cmd = "edit", spotlight = false }
             local winid = find_target_win(origin_win)
 

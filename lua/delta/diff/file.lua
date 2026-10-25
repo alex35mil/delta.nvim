@@ -46,6 +46,8 @@ local DEFAULT_DIFF_CONTEXT = 6
 ---@field hint_actions table[]
 ---@field closing? boolean
 ---@field mutating? boolean
+---@field replace_id? integer Latest pending replacement request.
+---@field replaced? boolean The diff was switched to another file with `replace`.
 
 ---@type table<delta.TabId, delta.diff.file.State>
 local tabs = {}
@@ -455,6 +457,19 @@ local function sync_open_cursor(left_win, right_win, left_buf, right_buf, old_li
     set_cursor_line(right_win, right_buf, target_line)
 end
 
+--- First changed line on each side of a diff.
+---@param old_lines string[]
+---@param new_lines string[]
+---@return integer old_line
+---@return integer new_line
+local function first_change_lines(old_lines, new_lines)
+    local first = Hunks.linematch_segments_from_lines(old_lines, new_lines)[1]
+    if not first then
+        return 1, 1
+    end
+    return math.max(first.old_start or 1, 1), math.max(first.start_line, 1)
+end
+
 ---@param state delta.diff.file.State
 ---@return delta.WinId?
 local function active_diff_win(state)
@@ -499,6 +514,27 @@ local function restore_origin_cursor(state, line)
         return
     end
     set_cursor_line(state.origin_win, bufnr, line)
+end
+
+--- After a switched diff closes, show its current file in the origin window.
+---@param state delta.diff.file.State
+local function show_replaced_file_in_origin(state)
+    if not state.replaced or not vim.api.nvim_win_is_valid(state.origin_win) then
+        return
+    end
+    local bufnr = vim.api.nvim_win_get_buf(state.origin_win)
+    if Repository.buffer_path(bufnr) == state.path then
+        return
+    end
+    if vim.fn.filereadable(state.path) == 0 then
+        return
+    end
+    local ok, err = pcall(vim.api.nvim_win_call, state.origin_win, function()
+        vim.cmd("edit " .. vim.fn.fnameescape(state.path))
+    end)
+    if not ok then
+        Notify.error("diff: could not open " .. state.path .. ": " .. tostring(err))
+    end
 end
 
 local function cleanup(state)
@@ -551,6 +587,7 @@ function M.close(tab)
         pcall(vim.api.nvim_set_current_tabpage, state.origin_tab)
         if vim.api.nvim_win_is_valid(state.origin_win) then
             pcall(vim.api.nvim_set_current_win, state.origin_win)
+            show_replaced_file_in_origin(state)
             restore_origin_cursor(state, close_cursor_line)
         end
     end
@@ -628,15 +665,41 @@ local function resolve_file_diff_mode(path, requested, status)
     return status:is_untracked() and "unstaged" or Mode.resolve(path, "auto", status)
 end
 
+local NO_NEWLINE_MARKER = "\\ No newline at end of file"
+
+--- Content the source buffer would write.
+---@param bufid delta.BufId
+---@return delta.FileContent
+local function buffer_content(bufid)
+    local lines = vim.api.nvim_buf_get_lines(bufid, 0, -1, false)
+    if #lines == 1 and lines[1] == "" and vim.api.nvim_buf_get_offset(bufid, 1) == 0 then
+        return { lines = {}, eol = false }
+    end
+    local eol = vim.bo[bufid].endofline or (vim.bo[bufid].fixendofline and not vim.bo[bufid].binary)
+    return { lines = lines, eol = eol and true or false }
+end
+
+--- Lines shown in a side buffer: content plus a no-newline marker when only the other side ends with one.
+---@param content delta.FileContent
+---@param other delta.FileContent
+---@return string[]
+local function display_lines(content, other)
+    local lines = copy_lines(content.lines)
+    if not content.eol and other.eol and #content.lines > 0 then
+        lines[#lines + 1] = NO_NEWLINE_MARKER
+    end
+    return lines
+end
+
 ---@param file delta.RepositoryFile
 ---@param requested delta.diff.FileMode
----@param current_buf_lines? string[]
+---@param current_content? delta.FileContent Source buffer content.
 ---@return boolean ok
 ---@return "unstaged"|"staged"? resolved
----@return string[]? old_lines
----@return string[]? new_lines
+---@return string[]? old_lines Display lines.
+---@return string[]? new_lines Display lines.
 ---@return boolean used_source_buffer
-local function load_diff_lines(file, requested, current_buf_lines)
+local function load_diff_lines(file, requested, current_content)
     local path = file.absolute_path
     local ok, status, errkind = Git.file_status(file)
     if not ok or not status then
@@ -656,41 +719,41 @@ local function load_diff_lines(file, requested, current_buf_lines)
     ---@type "unstaged"|"staged"
     local mode = resolved == "staged" and "staged" or "unstaged"
 
-    local old_ok, old_lines, old_err
-    local new_ok, new_lines, new_err
+    local old_ok, old, old_err
+    local new_ok, new, new_err
     local used_source_buffer = false
     if mode == "staged" then
-        old_ok, old_lines, old_err = Git.get_head_lines(file)
-        new_ok, new_lines, new_err = Git.get_index_lines(file)
+        old_ok, old, old_err = Git.get_content(file, "head")
+        new_ok, new, new_err = Git.get_content(file, "index")
     else
-        old_ok, old_lines, old_err = Git.get_index_lines(file)
-        if current_buf_lines then
-            new_ok, new_lines = true, copy_lines(current_buf_lines)
+        old_ok, old, old_err = Git.get_content(file, "index")
+        if current_content then
+            new_ok, new = true, current_content
             used_source_buffer = true
         else
-            new_ok, new_lines, new_err = Git.get_worktree_lines(file)
+            new_ok, new, new_err = Git.get_content(file, "worktree")
         end
     end
 
-    if not old_ok then
+    if not old_ok or not old then
         Notify.error(old_err or "Failed to read old file contents")
         return false, nil, nil, nil, false
     end
-    if not new_ok then
+    if not new_ok or not new then
         Notify.error(new_err or "Failed to read new file contents")
         return false, nil, nil, nil, false
     end
-    if same_lines(old_lines or {}, new_lines or {}) then
+    if old.eol == new.eol and same_lines(old.lines, new.lines) then
         return true, nil, nil, nil, used_source_buffer
     end
 
-    return true, mode, old_lines or {}, new_lines or {}, used_source_buffer
+    return true, mode, display_lines(old, new), display_lines(new, old), used_source_buffer
 end
 
 ---@param state delta.diff.file.State
----@return string[]?
+---@return delta.FileContent?
 ---@return integer?
-local function current_source_lines(state)
+local function current_source_content(state)
     if not state.source_bufid or not vim.api.nvim_buf_is_valid(state.source_bufid) then
         return nil, nil
     end
@@ -698,23 +761,27 @@ local function current_source_lines(state)
     if source_path ~= state.path then
         return nil, nil
     end
-    return vim.api.nvim_buf_get_lines(state.source_bufid, 0, -1, false), changedtick(state.source_bufid)
+    return buffer_content(state.source_bufid), changedtick(state.source_bufid)
 end
 
 ---@param state delta.diff.file.State
-local function refresh_state(state)
+---@param on_done? fun() Runs after the refresh applied new lines or closed the tab.
+local function refresh_state(state, on_done)
     if state.closing or not vim.api.nvim_tabpage_is_valid(state.tab) then
         return
     end
     Git.async(function()
-        local source_lines, source_changedtick = current_source_lines(state)
+        local source_content, source_changedtick = current_source_content(state)
         local ok, resolved, old_lines, new_lines, used_source_buffer =
-            load_diff_lines(state.file, state.requested_mode, source_lines)
+            load_diff_lines(state.file, state.requested_mode, source_content)
         if not ok then
             return
         end
         if not resolved then
             M.close(state.tab)
+            if on_done then
+                on_done()
+            end
             return
         end
         state.resolved_mode = resolved
@@ -724,6 +791,9 @@ local function refresh_state(state)
         set_buffer_lines(state.right_buf, new_lines or {})
         render_winbars(state)
         refresh_diff_windows(state)
+        if on_done then
+            on_done()
+        end
     end)
 end
 
@@ -761,12 +831,28 @@ local function toggle_stage_file(state, close_after)
             return
         end
         local did_stage_unstaged = state.resolved_mode == "unstaged"
-        local did_reopen = did_stage_unstaged and Spotlight.reopen_picker_after_stage(state.file, state.origin_win)
-        if close_after or did_reopen then
+        if close_after then
+            if did_stage_unstaged then
+                Spotlight.reopen_picker_after_stage(state.file, state.origin_win)
+            end
             M.close(state.tab)
-        else
-            refresh_state(state)
+            return
         end
+        if did_stage_unstaged and Spotlight.should_reopen_picker_after_stage(state.file) then
+            -- Stay in the diff on the staged view; reopen the picker once the view settled.
+            local file = state.file
+            -- No unstaged changes remain, so auto shows the staged view; a later unstage returns to unstaged.
+            state.requested_mode = "auto"
+            refresh_state(state, function()
+                if tabs[state.tab] == state and not state.closing then
+                    Spotlight.schedule_picker_reopen(file, active_diff_win(state))
+                else
+                    Spotlight.schedule_picker_reopen(file, state.origin_win)
+                end
+            end)
+            return
+        end
+        refresh_state(state)
     end)
 end
 
@@ -1003,6 +1089,101 @@ local function open_tab(
     attach(state)
 end
 
+---@param winid delta.WinId
+---@return delta.diff.file.State?
+local function state_for_win(winid)
+    if not winid or not vim.api.nvim_win_is_valid(winid) then
+        return nil
+    end
+    for _, state in pairs(tabs) do
+        if not state.closing and (state.left_win == winid or state.right_win == winid) then
+            return state
+        end
+    end
+end
+
+--- Whether `winid` is a pane of an open side-by-side file diff tab.
+---@param winid delta.WinId
+---@return boolean
+function M.owns_win(winid)
+    return state_for_win(winid) ~= nil
+end
+
+local next_replace_id = 0
+
+--- Switch the side-by-side diff tab that owns `winid` to another file.
+---@param winid delta.WinId
+---@param file delta.RepositoryFile
+---@param mode "unstaged"|"staged"
+function M.replace(winid, file, mode)
+    local state = state_for_win(winid)
+    if not state then
+        Notify.error("diff: window is not a side-by-side file diff")
+        return
+    end
+
+    next_replace_id = next_replace_id + 1
+    local replace_id = next_replace_id
+    state.replace_id = replace_id
+
+    Git.async(function()
+        local ok, resolved, old_lines, new_lines = load_diff_lines(file, mode, nil)
+        if tabs[state.tab] ~= state or state.closing or state.replace_id ~= replace_id then
+            return
+        end
+        state.replace_id = nil
+        if not ok then
+            return
+        end
+        if not resolved then
+            Notify.info("No changes for " .. file.path)
+            return
+        end
+        if not vim.api.nvim_win_is_valid(state.left_win) or not vim.api.nvim_win_is_valid(state.right_win) then
+            return
+        end
+
+        old_lines = old_lines or {}
+        new_lines = new_lines or {}
+        local old_label = resolved == "staged" and "HEAD" or "index"
+        local new_label = resolved == "staged" and "index" or "worktree"
+        local left_buf = create_side_buffer(file, old_label, old_lines)
+        local right_buf = create_side_buffer(file, new_label, new_lines)
+
+        -- Old side buffers are wiped when hidden (bufhidden=wipe).
+        vim.api.nvim_win_set_buf(state.left_win, left_buf)
+        vim.api.nvim_win_set_buf(state.right_win, right_buf)
+
+        state.path = file.absolute_path
+        state.file = file
+        state.requested_mode = mode
+        state.resolved_mode = resolved
+        state.left_buf = left_buf
+        state.right_buf = right_buf
+        state.source_bufid = nil
+        state.source_changedtick = nil
+        state.source_cursor_line = nil
+        state.used_source_buffer = false
+        state.replaced = true
+
+        for _, pane in ipairs({ { state.left_win, left_buf }, { state.right_win, right_buf } }) do
+            setup_window(pane[1], pane[2])
+            vim.api.nvim_win_call(pane[1], function()
+                vim.cmd("diffthis")
+            end)
+            setup_window(pane[1], pane[2])
+        end
+        refresh_diff_windows(state)
+
+        local old_line, new_line = first_change_lines(old_lines, new_lines)
+        set_cursor_line(state.left_win, left_buf, old_line)
+        set_cursor_line(state.right_win, right_buf, new_line)
+
+        setup_keymaps(state)
+        render_winbars(state)
+    end)
+end
+
 ---@param opts? delta.diff.FileOpenOpts
 function M.open(opts)
     opts = opts or {}
@@ -1032,7 +1213,7 @@ function M.open(opts)
         return
     end
 
-    local current_buf_lines = nil
+    local current_content = nil
     local source_bufid = nil
     local source_changedtick = nil
     local source_cursor_line = nil
@@ -1045,7 +1226,7 @@ function M.open(opts)
         and not bound_file
     then
         source_bufid = bufid
-        current_buf_lines = vim.api.nvim_buf_get_lines(bufid, 0, -1, false)
+        current_content = buffer_content(bufid)
         source_changedtick = changedtick(bufid)
         if vim.api.nvim_win_get_buf(origin_win) == bufid then
             source_cursor_line = vim.api.nvim_win_get_cursor(origin_win)[1]
@@ -1072,7 +1253,7 @@ function M.open(opts)
             file = ref
         end
         local ok, resolved, old_lines, new_lines, used_source_buffer =
-            load_diff_lines(file, requested, current_buf_lines)
+            load_diff_lines(file, requested, current_content)
         if not ok then
             return
         end

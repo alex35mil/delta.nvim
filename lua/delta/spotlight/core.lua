@@ -385,11 +385,12 @@ local function sync_picker_context(winid, bufid)
     end
 end
 
+--- Whether the picker should reopen after staging `file`.
+--- Must be called inside Git.async().
 ---@param file delta.RepositoryFile
----@param origin_win? delta.WinId Window to use as picker origin.
----@return boolean scheduled
+---@return boolean should_reopen
 ---@return delta.FileStatus? status
-function M.reopen_picker_after_stage(file, origin_win)
+function M.should_reopen_picker_after_stage(file)
     if not Config.options.spotlight.reopen_picker_after_stage then
         return false, nil
     end
@@ -403,6 +404,13 @@ function M.reopen_picker_after_stage(file, origin_win)
         return false, status
     end
 
+    return true, status
+end
+
+--- Schedule a picker reopen after staging `file`.
+---@param file delta.RepositoryFile
+---@param origin_win? delta.WinId Window to use as picker origin.
+function M.schedule_picker_reopen(file, origin_win)
     vim.schedule(function()
         local function reopen()
             require("delta.picker.ui").reopen_after_stage({ file = file })
@@ -414,6 +422,18 @@ function M.reopen_picker_after_stage(file, origin_win)
             reopen()
         end
     end)
+end
+
+---@param file delta.RepositoryFile
+---@param origin_win? delta.WinId Window to use as picker origin.
+---@return boolean scheduled
+---@return delta.FileStatus? status
+function M.reopen_picker_after_stage(file, origin_win)
+    local should_reopen, status = M.should_reopen_picker_after_stage(file)
+    if not should_reopen then
+        return false, status
+    end
+    M.schedule_picker_reopen(file, origin_win)
     return true, status
 end
 
