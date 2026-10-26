@@ -48,10 +48,6 @@
         "scope": "project",
         "field": "Priority",
         "values": ["Urgent", "High", "Medium", "Low"]
-      },
-      "internalId": {
-        "scope": "project",
-        "field": "Internal ID"
       }
     }
   },

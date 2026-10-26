@@ -1,4 +1,4 @@
 /.agents/gigs/
 /tests/deps/
 /tests/integration/**/fixtures/result/actual/
-.project/**/.local/
+/.project/.local/
