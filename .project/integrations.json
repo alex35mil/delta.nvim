@@ -12,15 +12,39 @@
       "number": 5
     },
     "labels": {
-      "kind": {
-        "epic": "Kind: Epic",
-        "deliverableKinds": {
-          "feature": "Kind: Feature",
-          "bugfix": "Kind: Bugfix",
-          "research": "Kind: Research",
-          "refactor": "Kind: Refactor",
-          "audit": "Kind: Audit",
-          "chore": "Kind: Chore"
+      "groups": {
+        "kind": {
+          "appliesTo": ["epic", "deliverable"],
+          "cardinality": "exactlyOne",
+          "values": {
+            "epic": { "name": "Kind: Epic", "color": "#8250DF", "description": "A multi-deliverable initiative." },
+            "feature": { "name": "Kind: Feature", "color": "#0969DA", "description": "New user-visible or system capability." },
+            "bugfix": { "name": "Kind: Bugfix", "color": "#CF222E", "description": "Correction of defective behavior." },
+            "research": { "name": "Kind: Research", "color": "#1A7F37", "description": "Investigation producing evidence and conclusions." },
+            "refactor": { "name": "Kind: Refactor", "color": "#BC4C00", "description": "Behavior-preserving structural improvement." },
+            "audit": { "name": "Kind: Audit", "color": "#9A6700", "description": "Evidence-based assessment and recommendations." },
+            "chore": { "name": "Kind: Chore", "color": "#57606A", "description": "Maintenance or operational work." }
+          }
+        },
+        "area": {
+          "appliesTo": ["epic", "deliverable"],
+          "cardinality": "oneOrMore",
+          "values": {
+            "picker": { "name": "Area: Picker", "color": "#006B75", "description": "Changed-files picker: tree, sources, preview, picker actions" },
+            "spotlight": { "name": "Area: Spotlight", "color": "#006B75", "description": "In-buffer hunk mode: signs, folds, winbar, hunk navigation and actions" },
+            "diff": { "name": "Area: Diff", "color": "#006B75", "description": "Hunk diff popup and side-by-side file diff" },
+            "git": { "name": "Area: Git", "color": "#006B75", "description": "Git layer: repository selection, status, staging and reset patches" },
+            "config": { "name": "Area: Config & API", "color": "#006B75", "description": "Setup options, public Lua API, commands, keymaps, health" },
+            "docs": { "name": "Area: Docs", "color": "#006B75", "description": "User documentation: README and CHANGELOG" },
+            "tooling": { "name": "Area: Tooling", "color": "#006B75", "description": "Repository tooling: agent instructions, workflows, tests, Makefile, CI" }
+          }
+        },
+        "breaking": {
+          "appliesTo": ["deliverable"],
+          "cardinality": "zeroOrOne",
+          "values": {
+            "breaking": { "name": "Breaking", "color": "#B60205", "description": "Changes public config or API; requires a ! commit and a BREAKING CHANGELOG entry." }
+          }
         }
       }
     },
