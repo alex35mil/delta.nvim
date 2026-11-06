@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-06
+
+- **ADDED:** The picker remembers collapsed directories across reopen (including automatic reopen after staging) and source switching, separately per repository and source. Controlled by `picker.remember_collapsed`, enabled by default.
+- **ADDED:** `expand_all` and `collapse_all` picker actions, bound to `zR` and `zM` in normal mode.
+
 ## 2026-10-25
 
 - **FIXED:** Opening a file from a picker launched in a side-by-side file diff now updates that diff instead of opening the file in one of its panes. Closing a switched diff returns to that file at the diff cursor.

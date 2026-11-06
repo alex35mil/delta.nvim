@@ -84,6 +84,60 @@ local state = nil
 ---@type delta.picker.ReopenMemory
 local reopen_memory = {}
 
+--- Session memory of collapsed directories: repository root → source ID → collapsed set.
+--- Used only when `picker.remember_collapsed` is enabled.
+---@type table<string, table<string, table<string, boolean>>>
+local collapsed_memory = {}
+
+--- Stable identity of an instance's current source for collapsed memory.
+--- Named sources use their config key; inline sources use their label in a separate namespace.
+---@param s delta.picker.Instance
+---@return string
+local function source_id(s)
+    local key = s.source_keys[s.source_idx]
+    if key == false then
+        return "inline:" .. s.sources[s.source_idx].label
+    end
+    return "named:" .. key
+end
+
+--- Collapsed set for an instance's repository and current source.
+--- Returns the remembered set (mutated in place) when `picker.remember_collapsed` is enabled,
+--- otherwise a fresh empty set.
+---@param s delta.picker.Instance
+---@return table<string, boolean>
+local function collapsed_for(s)
+    if not Config.options.picker.remember_collapsed then
+        return {}
+    end
+
+    local by_source = collapsed_memory[s.repo.root]
+    if not by_source then
+        by_source = {}
+        collapsed_memory[s.repo.root] = by_source
+    end
+
+    local id = source_id(s)
+    local set = by_source[id]
+    if not set then
+        set = {}
+        by_source[id] = set
+    end
+    return set
+end
+
+--- Directory paths containing a file path, outermost first.
+---@param path string
+---@return string[]
+local function ancestor_dirs(path)
+    local dirs = {}
+    local parts = vim.split(path, "/")
+    for i = 1, #parts - 1 do
+        dirs[#dirs + 1] = table.concat(parts, "/", 1, i)
+    end
+    return dirs
+end
+
 --- Get the current source from state.
 ---@return delta.SourceConfig|delta.SourceDef|nil
 local function current_source()
@@ -1071,6 +1125,52 @@ local function render()
     highlight_branch()
 end
 
+--- Preselect a file path, expanding its collapsed ancestor directories when it is hidden.
+---@param path string
+---@param section? delta.picker.Section
+---@return boolean
+local function reveal_path(path, section)
+    if not state then
+        return false
+    end
+    if preselect_path(path, section) then
+        return true
+    end
+    if not find_file_entry(path) then
+        return false
+    end
+
+    local changed = false
+    for _, dir in ipairs(ancestor_dirs(path)) do
+        if state.collapsed[dir] then
+            state.collapsed[dir] = nil
+            changed = true
+        end
+    end
+    if not changed then
+        return false
+    end
+
+    render()
+    return preselect_path(path, section)
+end
+
+--- Select the node matching a target after a re-render, if present.
+---@param target? { path: string, section: delta.picker.Section }
+local function select_target(target)
+    if not state or not target then
+        return
+    end
+    for i, node in ipairs(state.nodes) do
+        if node and node.path == target.path and node.section == target.section then
+            state.cursor_idx = i
+            update_cursor_highlight()
+            highlight_branch()
+            return
+        end
+    end
+end
+
 --- Find the index of the first file (non-directory) node, or first real node.
 ---@param nodes (delta.Node|false)[]
 ---@return number
@@ -1225,6 +1325,51 @@ local function make_context()
                 render()
             end
         end,
+        expand_all = function()
+            if not state or next(state.collapsed) == nil then
+                return
+            end
+            local n = state.nodes[state.cursor_idx]
+            local target = n and { path = n.path, section = n.section } or nil
+            -- Clear in place so the remembered set stays the same table.
+            for path in pairs(state.collapsed) do
+                state.collapsed[path] = nil
+            end
+            render()
+            select_target(target)
+        end,
+        collapse_all = function()
+            if not state then
+                return
+            end
+            local n = state.nodes[state.cursor_idx]
+            -- Every directory prefix of every file in the source, regardless of the filter query.
+            -- Merged single-child directory nodes use their deepest path, which is one of these prefixes.
+            for _, files in ipairs({ state.unstaged, state.staged }) do
+                for _, file in ipairs(files) do
+                    for _, dir in ipairs(ancestor_dirs(file.path)) do
+                        state.collapsed[dir] = true
+                    end
+                end
+            end
+            render()
+            if not n then
+                return
+            end
+            -- Select the visible top-level entry that contains the previously selected entry.
+            for i, candidate in ipairs(state.nodes) do
+                if
+                    candidate
+                    and candidate.section == n.section
+                    and (candidate.path == n.path or vim.startswith(n.path, candidate.path .. "/"))
+                then
+                    state.cursor_idx = i
+                    update_cursor_highlight()
+                    highlight_branch()
+                    return
+                end
+            end
+        end,
         cycle_source = function()
             if not state or #state.sources <= 1 then
                 return
@@ -1237,7 +1382,7 @@ local function make_context()
                     return
                 end
                 remember_current_source()
-                state.collapsed = {}
+                state.collapsed = collapsed_for(state)
                 state.cursor_idx = 1
                 resize_layout()
                 render()
@@ -1256,7 +1401,7 @@ local function make_context()
                     return
                 end
                 remember_current_source()
-                state.collapsed = {}
+                state.collapsed = collapsed_for(state)
                 state.cursor_idx = 1
                 resize_layout()
                 render()
@@ -1632,6 +1777,7 @@ function M.show(opts)
         parent_map = {},
         section_lines = {},
         staged_start = 0,
+        -- Resolved from collapsed memory once the repository and shown source are known.
         collapsed = {},
         cursor_idx = 1,
         tree_leftcol = 0,
@@ -1682,6 +1828,7 @@ function M.show(opts)
             return
         end
         remember_current_source()
+        s.collapsed = collapsed_for(s)
 
         local input_buf, input_win, tree_buf, tree_win, layout = create_float(s)
 
@@ -1710,13 +1857,13 @@ function M.show(opts)
         elseif state.preselect_first_unstaged then
             did_preselect = preselect_first_unstaged()
         elseif state.preselect_path then
-            did_preselect = preselect_path(state.preselect_path)
+            did_preselect = reveal_path(state.preselect_path)
         end
 
         if not did_preselect and not state.preselect_first_unstaged then
             local current = origin_path and Repository.file(s.repo, origin_path) or nil
             if current then
-                preselect_path(current.path, origin_section)
+                reveal_path(current.path, origin_section)
             end
         end
 
