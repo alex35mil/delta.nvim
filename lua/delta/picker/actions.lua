@@ -35,6 +35,18 @@ function M.collapse(ctx)
     ctx.collapse()
 end
 
+--- Expand every directory in the current source.
+---@param ctx delta.picker.ActionContext
+function M.expand_all(ctx)
+    ctx.expand_all()
+end
+
+--- Collapse every directory in the current source.
+---@param ctx delta.picker.ActionContext
+function M.collapse_all(ctx)
+    ctx.collapse_all()
+end
+
 --- Open file or toggle directory.
 ---@param ctx delta.picker.ActionContext
 ---@return boolean true if a file was opened

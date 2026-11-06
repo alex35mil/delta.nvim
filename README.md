@@ -189,6 +189,8 @@ delta.setup({
     picker = {
         -- Start in insert mode for immediate filtering, or "n" for normal mode.
         initial_mode = "i",
+        -- Remember collapsed directories for the session, per repository and per source.
+        remember_collapsed = true,
         sources = {
             -- Built-in source; add more named sources alongside it.
             git = { label = "Git" },
@@ -249,6 +251,8 @@ delta.setup({
             move_down = { { { "j", modes = "n" }, "<Down>" }, picker.actions.move(1) },
             scroll_left = { { "zh", modes = "n" }, picker.actions.scroll_horizontal(-8) },
             scroll_right = { { "zl", modes = "n" }, picker.actions.scroll_horizontal(8) },
+            expand_all = { { "zR", modes = "n" }, picker.actions.expand_all },
+            collapse_all = { { "zM", modes = "n" }, picker.actions.collapse_all },
             toggle_preview = { "<C-p>", picker.actions.toggle_preview },
             cycle_source = { "<Tab>", picker.actions.cycle_source },
             cycle_source_back = { "<S-Tab>", picker.actions.cycle_source_back },
@@ -375,6 +379,8 @@ require("delta").setup({
 
 The picker shows git-changed files in a tree, split into unstaged and staged sections. You can filter by typing, open files, switch sources, preview files, stage/unstage/reset files or directories.
 
+With `picker.remember_collapsed` (enabled by default), collapsed directories are remembered for the Neovim session and restored when the picker reopens, including the automatic reopen after staging, and when switching sources. State is kept separately per repository (each worktree, nested repository, and submodule has its own) and per source. Named sources are identified by their config key; inline sources passed to `show()` are identified by their `label`, so inline sources with the same label share state. Nothing is saved across restarts. When the picker opens on a file inside a collapsed directory, that file's directories are expanded so it can be selected. Set `remember_collapsed = false` to start every picker, and every source switch, fully expanded.
+
 The picker prompt buffer uses the `delta-input` filetype. You can target it from your own config however you need.
 
 When the picker is opened from a side-by-side file diff tab, opening a file updates that diff to show the selected file instead of opening a buffer. This applies to every open action (`open`, `open_vsplit`, `open_hsplit`, `spotlight`). The entry's picker section picks the mode: unstaged entries show INDEX ↔ WORKTREE, and staged entries show HEAD ↔ INDEX.
@@ -387,6 +393,7 @@ When the picker is opened from a side-by-side file diff tab, opening a file upda
 | `j` / `<Down>` | Move selection down |
 | `zh` / `zl` | Scroll picker tree horizontally in normal mode |
 | `<CR>` | Open file, or expand/collapse directory |
+| `zR` / `zM` | Expand / collapse all directories in normal mode |
 | `<C-p>` | Toggle preview |
 | `<Tab>` | Cycle to next source |
 | `<S-Tab>` | Cycle to previous source |
@@ -403,6 +410,8 @@ Available built-ins:
 - `move_to_bottom` — Jump to the last visible entry.
 - `expand` — Expand the directory under the cursor.
 - `collapse` — Collapse the directory under the cursor.
+- `expand_all` — Expand every directory in the current source.
+- `collapse_all` — Collapse every directory in the current source, including directories hidden by the filter query.
 - `open` — Open the selected file, or toggle a directory open/closed.
 - `open_vsplit` — Open the selected file in a vertical split.
 - `open_hsplit` — Open the selected file in a horizontal split.
@@ -434,6 +443,8 @@ Every action receives context object as an argument:
 ---@field move_to_bottom fun()
 ---@field expand fun()
 ---@field collapse fun()
+---@field expand_all fun()
+---@field collapse_all fun()
 ---@field cycle_source fun()
 ---@field cycle_source_back fun()
 ---@field toggle_stage fun(cb?: fun()): boolean

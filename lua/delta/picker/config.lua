@@ -14,6 +14,8 @@ local Actions = require("delta.picker.actions")
 ---@field move_to_bottom fun() Move cursor to last node
 ---@field expand fun() Expand directory under cursor
 ---@field collapse fun() Collapse directory under cursor
+---@field expand_all fun() Expand every directory in the current source
+---@field collapse_all fun() Collapse every directory in the current source
 ---@field cycle_source fun() Cycle to the next source
 ---@field cycle_source_back fun() Cycle to the previous source
 ---@field toggle_stage fun(cb?: fun()): boolean Toggle staged/unstaged for current entry (refreshes view)
@@ -87,6 +89,7 @@ local Actions = require("delta.picker.actions")
 
 ---@class delta.PickerConfig
 ---@field initial_mode delta.picker.InitialMode Initial mode when opening the picker
+---@field remember_collapsed boolean Remember collapsed directories per repository and source for the session
 ---@field layout delta.picker.Layout
 ---@field sources table<string, delta.SourceConfig> Named source definitions ("git" is built-in)
 ---@field actions table<string, delta.picker.ActionEntry>
@@ -94,6 +97,7 @@ local Actions = require("delta.picker.actions")
 ---@type delta.PickerConfig
 local defaults = {
     initial_mode = "i",
+    remember_collapsed = true,
     sources = {
         git = { label = "Git" },
     },
@@ -136,6 +140,8 @@ local defaults = {
         move_down = { { { "j", modes = "n" }, "<Down>" }, Actions.move(1) },
         scroll_left = { { "zh", modes = "n" }, Actions.scroll_horizontal(-8) },
         scroll_right = { { "zl", modes = "n" }, Actions.scroll_horizontal(8) },
+        expand_all = { { "zR", modes = "n" }, Actions.expand_all },
+        collapse_all = { { "zM", modes = "n" }, Actions.collapse_all },
         toggle_preview = { "<C-p>", Actions.toggle_preview },
         cycle_source = { "<Tab>", Actions.cycle_source },
         cycle_source_back = { "<S-Tab>", Actions.cycle_source_back },
