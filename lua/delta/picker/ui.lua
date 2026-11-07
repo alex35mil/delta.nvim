@@ -1213,6 +1213,9 @@ local function move_cursor(delta)
 end
 
 --- Find the best window to open a file in.
+--- Never returns a window with 'winfixbuf', since opening a file there fails with E1513.
+--- Preference, in candidate order: a normal file window, then any window that can switch
+--- buffers, then a new split of the first non-float candidate.
 ---@param origin_win? delta.WinId Prefer this window as the original picker source.
 ---@return delta.WinId
 local function find_target_win(origin_win)
@@ -1232,26 +1235,37 @@ local function find_target_win(origin_win)
     local candidates = { origin, current, prev }
     vim.list_extend(candidates, all)
 
-    local non_float = 0
+    local first_non_float = nil
+    local first_switchable = nil
     for _, win in ipairs(candidates) do
-        if win ~= 0 and vim.api.nvim_win_is_valid(win) then
-            local config = vim.api.nvim_win_get_config(win)
-            local is_float = config.relative ~= ""
-            if not is_float then
-                non_float = win
+        if win ~= 0 and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_config(win).relative == "" then
+            first_non_float = first_non_float or win
+            if not vim.wo[win].winfixbuf then
                 local buf = vim.api.nvim_win_get_buf(win)
                 if vim.bo[buf].buftype == "" then
                     return win
                 end
+                first_switchable = first_switchable or win
             end
         end
     end
 
-    if non_float ~= 0 then
-        return non_float
+    if first_switchable then
+        return first_switchable
     end
-    vim.cmd("new")
-    return vim.api.nvim_get_current_win()
+
+    -- Every non-float window has 'winfixbuf'. Split from a chosen window rather than the
+    -- focused picker float, and clear the option in case the split carried it over.
+    if not first_non_float then
+        error("delta.nvim: no non-floating window to open a file from")
+    end
+    local new_win
+    vim.api.nvim_win_call(first_non_float, function()
+        vim.cmd("new")
+        new_win = vim.api.nvim_get_current_win()
+    end)
+    vim.wo[new_win].winfixbuf = false
+    return new_win
 end
 
 --- Build the action context passed to action handlers.
