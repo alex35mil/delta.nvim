@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-07
+
+- **FIXED:** Opening a file from the picker no longer fails with `E1513` when the only windows are scratch buffers or have `'winfixbuf'` set (for example a start screen next to a side panel). The file opens in a window that can switch buffers, or in a new split.
+
 ## 2026-11-06
 
 - **ADDED:** The picker remembers collapsed directories across reopen (including automatic reopen after staging) and source switching, separately per repository and source. Controlled by `picker.remember_collapsed`, enabled by default.
